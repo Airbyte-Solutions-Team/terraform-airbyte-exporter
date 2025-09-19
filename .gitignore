@@ -1,0 +1,20 @@
+# Ignore editor files
+.vscode/
+.aider*
+.env
+
+# Binaries
+api-to-terraform
+api-to-terraform.exe
+
+# terraform
+*.tf
+*.tf.json
+.terraform/
+.terraform.lock.hcl
+crash.log
+*.tfstate
+*.tfstate.backup
+
+# Local testing
+config.yaml

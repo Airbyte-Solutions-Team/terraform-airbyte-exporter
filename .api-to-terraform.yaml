@@ -1,0 +1,5 @@
+# Example configuration file for api-to-terraform
+api:
+  url: "https://api.airbyte.com"  # Can also be set via AIRBYTE_API_URL environment variable
+  key: ""  # Can also be set via AIRBYTE_API_KEY environment variable
+
