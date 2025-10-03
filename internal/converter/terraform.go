@@ -4,12 +4,14 @@ import (
 	"api-to-terraform/internal/airbyte"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	hcljson "github.com/hashicorp/hcl/v2/json"
+	"github.com/spf13/viper"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -85,11 +87,19 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 	resources := tfJSON["resource"].(map[string]interface{})
 	imports := tfJSON["import"].([]interface{})
 
+	workspaceID := viper.GetString("api.workspace")
+	if workspaceID != "" {
+		fmt.Fprintf(os.Stderr, "Using workspace ID: %s\n", workspaceID)
+	}
+
 	// TODO: Rework this to avoid code duplication - maybe use reflection or a common interface
 	// Try parsing as SourceResponse
 	var sourceResp airbyte.SourceResponse
 	if err := json.Unmarshal(jsonData, &sourceResp); err == nil && len(sourceResp.Sources) > 0 && sourceResp.Sources[0].Type != "" {
 		for _, source := range sourceResp.Sources {
+			if workspaceID != "" && source.WorkspaceID != workspaceID {
+				continue
+			}
 			tc.addSourceToJSON(resources, source, &imports)
 		}
 		tfJSON["import"] = imports
@@ -100,6 +110,9 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 	var destResp airbyte.DestinationResponse
 	if err := json.Unmarshal(jsonData, &destResp); err == nil && len(destResp.Destinations) > 0 && destResp.Destinations[0].Type != "" {
 		for _, dest := range destResp.Destinations {
+			if workspaceID != "" && dest.WorkspaceID != workspaceID {
+				continue
+			}
 			tc.addDestinationToJSON(resources, dest, &imports)
 		}
 		tfJSON["import"] = imports
@@ -110,6 +123,9 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 	var connResp airbyte.ConnectionResponse
 	if err := json.Unmarshal(jsonData, &connResp); err == nil && len(connResp.Connections) > 0 {
 		for _, conn := range connResp.Connections {
+			if workspaceID != "" && conn.WorkspaceID != workspaceID {
+				continue
+			}
 			tc.addConnectionToJSON(resources, conn, &imports)
 		}
 		tfJSON["import"] = imports

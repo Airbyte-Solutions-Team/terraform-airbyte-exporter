@@ -39,7 +39,8 @@ api:
 2. **Environment variables**:
 ```bash
 export AIRBYTE_API_URL="https://api.airbyte.com"
-export AIRBYTE_API_KEY="your-airbyte-access-token"
+export AIRBYTE_API_CLIENT_ID="your-airbyte-client-id"
+export AIRBYTE_API_CLIENT_SECRET="your-airbyte-client-secret"
 ```
 
 3. **Command-line flags**:
@@ -49,12 +50,11 @@ export AIRBYTE_API_KEY="your-airbyte-access-token"
 
 ### Getting an Airbyte Access Token
 
-To use this tool, you'll need an Airbyte access token:
+To use this tool, you'll need an Airbyte client ID and secret:
 
 1. Log into your Airbyte account
 2. Go to Settings → Account → Applications
 3. Create a new application
-4. Copy the generated access token
 
 See the [Airbyte API documentation](https://docs.airbyte.com/using-airbyte/configuring-api-access) for more details.
 

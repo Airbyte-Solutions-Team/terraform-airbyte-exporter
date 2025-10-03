@@ -30,11 +30,15 @@ func init() {
 	// Persistent flags available to all commands
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.api-to-terraform.yaml)")
 	rootCmd.PersistentFlags().String("api-url", "", "Base URL of the API")
-	rootCmd.PersistentFlags().String("api-key", "", "API key for authentication")
+	rootCmd.PersistentFlags().String("client-id", "", "Client ID for authentication")
+	rootCmd.PersistentFlags().String("client-secret", "", "Client secret for authentication")
+	rootCmd.PersistentFlags().String("workspace", "", "Airbyte workspace ID to filter resources")
 
 	// Bind flags to viper
 	viper.BindPFlag("api.url", rootCmd.PersistentFlags().Lookup("api-url"))
-	viper.BindPFlag("api.key", rootCmd.PersistentFlags().Lookup("api-key"))
+	viper.BindPFlag("api.client_id", rootCmd.PersistentFlags().Lookup("client-id"))
+	viper.BindPFlag("api.client_secret", rootCmd.PersistentFlags().Lookup("client-secret"))
+	viper.BindPFlag("api.workspace", rootCmd.PersistentFlags().Lookup("workspace"))
 }
 
 // initConfig reads in config file and ENV variables if set.

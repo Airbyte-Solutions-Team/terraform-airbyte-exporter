@@ -42,7 +42,8 @@ func init() {
 
 func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	baseURL := viper.GetString("api.url")
-	apiKey := viper.GetString("api.key")
+	clientID := viper.GetString("api.client_id")
+	clientSecret := viper.GetString("api.client_secret")
 	outputDir := viper.GetString("airbyte.output-dir")
 	splitFiles := viper.GetBool("airbyte.split")
 
@@ -50,12 +51,8 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 		baseURL = "https://api.airbyte.com"
 	}
 
-	if apiKey == "" {
-		return fmt.Errorf("an Airbyte API key is required. Set via --api-key flag or AIRBYTE_API_KEY environment variable")
-	}
-
 	// Create API client
-	client := api.NewClient(baseURL, apiKey)
+	client := api.NewClient(baseURL, clientID, clientSecret)
 	conv := converter.NewTerraformConverter()
 
 	// Resources to export
@@ -65,7 +62,7 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 		filename string
 	}{
 		{"sources", "/v1/sources", "sources.tf"},
-		// {"destinations", "/v1/destinations", "destinations.tf"},
+		{"destinations", "/v1/destinations", "destinations.tf"},
 		{"connections", "/v1/connections", "connections.tf"},
 	}
 
