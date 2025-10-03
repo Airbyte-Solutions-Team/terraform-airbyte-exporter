@@ -20,7 +20,7 @@ go build -o api-to-terraform
 
 ```bash
 # Fetch all sources and convert to Terraform
-./api-to-terraform airbyte export --api-url https://api.airbyte.com --api-key YOUR_ACCESS_TOKEN
+./api-to-terraform airbyte export --api-url https://api.airbyte.com --client-id "airbyte-client-id" --client-secret "airbyte-client-secret"
 ```
 
 **Important**: If you use Self-Managed Enterprise or an Open Source deployment, your URL will need to include `/api/public` at the end. For example, `https://airbyte.contoso.com/api/public`. 
@@ -31,9 +31,11 @@ You can configure the tool using:
 
 1. **Configuration file** (`~/.api-to-terraform.yaml`):
 ```yaml
+# Example configuration file for api-to-terraform
 api:
-  url: "https://api.airbyte.com"
-  key: "your-airbyte-access-token"
+  url: "https://api.airbyte.com"  # Can also be set via AIRBYTE_API_URL environment variable
+  client_id: "your_client_id"  # Can also be set via AIRBYTE_API_CLIENT_ID environment variable  
+  client_secret: "your_client_secret"  # Can also be set via AIRBYTE_API_CLIENT_SECRET environment variable
 ```
 
 2. **Environment variables**:
@@ -45,7 +47,7 @@ export AIRBYTE_API_CLIENT_SECRET="your-airbyte-client-secret"
 
 3. **Command-line flags**:
 ```bash
-./api-to-terraform airbyte export --api-url https://api.airbyte.com --api-key YOUR_ACCESS_TOKEN
+./api-to-terraform airbyte export --api-url https://api.airbyte.com --api-url https://api.airbyte.com --client-id "airbyte-client-id" --client-secret "airbyte-client-secret"
 ```
 
 ### Getting an Airbyte Access Token
