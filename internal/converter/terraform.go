@@ -103,6 +103,9 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 			tc.addSourceToJSON(resources, source, &imports)
 		}
 		tfJSON["import"] = imports
+		j, _ := json.Marshal(tfJSON)
+		println(string(jsonData))
+		println(string(j))
 		return nil
 	}
 
