@@ -334,9 +334,16 @@ func (tc *TerraformConverter) tokenIdent(s string) *hclwrite.Token {
 }
 
 func (tc *TerraformConverter) tokenString(s string) hclwrite.Tokens {
+	// Escape newlines and other special characters for HCL
+	escaped := strings.ReplaceAll(s, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+	escaped = strings.ReplaceAll(escaped, "\n", "\\n")
+	escaped = strings.ReplaceAll(escaped, "\r", "\\r")
+	escaped = strings.ReplaceAll(escaped, "\t", "\\t")
+	
 	return hclwrite.Tokens{
 		{Type: hclsyntax.TokenOQuote, Bytes: []byte("\"")},
-		{Type: hclsyntax.TokenQuotedLit, Bytes: []byte(s)},
+		{Type: hclsyntax.TokenQuotedLit, Bytes: []byte(escaped)},
 		{Type: hclsyntax.TokenCQuote, Bytes: []byte("\"")},
 	}
 }
@@ -415,7 +422,7 @@ func (tc *TerraformConverter) addValueTokens(tokens *hclwrite.Tokens, value inte
 			varName := v[2 : len(v)-1] // Remove ${ and }
 			*tokens = append(*tokens, tc.tokenIdent(varName))
 		} else {
-			// Regular string
+			// Regular string - escape special characters including newlines
 			*tokens = append(*tokens, tc.tokenString(v)...)
 		}
 	case float64:
