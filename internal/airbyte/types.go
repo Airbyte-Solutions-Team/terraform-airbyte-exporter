@@ -41,20 +41,22 @@ type ConnectionResponse struct {
 
 // Connection represents an Airbyte connection
 type Connection struct {
-	ConnectionID                 string      `json:"connectionId"`
-	Name                         string      `json:"name"`
-	SourceID                     string      `json:"sourceId"`
-	DestinationID                string      `json:"destinationId"`
-	WorkspaceID                  string      `json:"workspaceId"`
-	Status                       string      `json:"status"`
-	Schedule                     *Schedule   `json:"schedule,omitempty"`
-	SyncCatalog                  SyncCatalog `json:"syncCatalog"`
-	NamespaceDefinition          string      `json:"namespaceDefinition"`
-	NamespaceFormat              string      `json:"namespaceFormat,omitempty"`
-	Prefix                       string      `json:"prefix,omitempty"`
-	NonBreakingChangesPreference string      `json:"nonBreakingChangesPreference"`
-	CreatedAt                    int         `json:"createdAt"`
-	UpdatedAt                    int         `json:"updatedAt"`
+	ConnectionID                     string          `json:"connectionId"`
+	Name                             string          `json:"name"`
+	SourceID                         string          `json:"sourceId"`
+	DestinationID                    string          `json:"destinationId"`
+	WorkspaceID                      string          `json:"workspaceId"`
+	Status                           string          `json:"status"`
+	Schedule                         *Schedule       `json:"schedule,omitempty"`
+	SyncCatalog                      *SyncCatalog    `json:"syncCatalog,omitempty"`
+	Configurations                   *Configurations `json:"configurations,omitempty"`
+	NamespaceDefinition              string          `json:"namespaceDefinition"`
+	NamespaceFormat                  string          `json:"namespaceFormat,omitempty"`
+	Prefix                           string          `json:"prefix,omitempty"`
+	NonBreakingSchemaUpdatesBehavior string          `json:"nonBreakingSchemaUpdatesBehavior,omitempty"`
+	Tags                             []Tag           `json:"tags,omitempty"`
+	CreatedAt                        int             `json:"createdAt"`
+	UpdatedAt                        int             `json:"updatedAt,omitempty"`
 }
 
 // Schedule represents a connection schedule
@@ -67,6 +69,11 @@ type Schedule struct {
 // SyncCatalog represents the sync catalog configuration
 type SyncCatalog struct {
 	Streams []Stream `json:"streams"`
+}
+
+// Configurations represents the connection configurations (alternative to SyncCatalog)
+type Configurations struct {
+	Streams []map[string]interface{} `json:"streams"`
 }
 
 // Stream represents a data stream configuration
@@ -95,4 +102,46 @@ type StreamSyncConfig struct {
 	AliasName             string     `json:"aliasName"`
 	Selected              bool       `json:"selected"`
 	FieldSelectionEnabled bool       `json:"fieldSelectionEnabled"`
+}
+
+// DeclarativeSourceDefinitionResponse represents the response from the declarative source definitions endpoint
+type DeclarativeSourceDefinitionResponse struct {
+	DeclarativeSourceDefinitions []DeclarativeSourceDefinition `json:"data"`
+	Next                         string                        `json:"next,omitempty"`
+	Previous                     string                        `json:"previous,omitempty"`
+}
+
+// DeclarativeSourceDefinition represents an Airbyte declarative source definition
+type DeclarativeSourceDefinition struct {
+	ID          string                 `json:"id"`
+	Name        string                 `json:"name"`
+	Manifest    map[string]interface{} `json:"manifest"`
+	Version     int                    `json:"version"`
+	WorkspaceID string                 `json:"workspaceId,omitempty"`
+}
+
+// WorkspaceResponse represents the response from the workspaces endpoint
+type WorkspaceResponse struct {
+	Workspaces []Workspace `json:"data"`
+	Next       string      `json:"next,omitempty"`
+	Previous   string      `json:"previous,omitempty"`
+}
+
+// Workspace represents an Airbyte workspace
+type Workspace struct {
+	WorkspaceID string `json:"workspaceId"`
+	Name        string `json:"name"`
+}
+
+// Tag represents a tag on a connection
+type Tag struct {
+	TagID       string `json:"tagId"`
+	Name        string `json:"name"`
+	Color       string `json:"color"`
+	WorkspaceID string `json:"workspaceId"`
+}
+
+// SelectedField represents a selected field in a stream configuration
+type SelectedField struct {
+	FieldPath []string `json:"fieldPath"`
 }

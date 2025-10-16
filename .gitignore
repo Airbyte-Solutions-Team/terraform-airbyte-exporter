@@ -15,6 +15,9 @@ api-to-terraform.exe
 crash.log
 *.tfstate
 *.tfstate.backup
+*.tfvars
+*.tfvars.example
 
 # Local testing
 config.yaml
+fixtures
