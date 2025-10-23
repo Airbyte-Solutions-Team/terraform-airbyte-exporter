@@ -144,7 +144,7 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 	// Try parsing as SourceResponse
 	var sourceResp airbyte.SourceResponse
 	err := json.Unmarshal(jsonData, &sourceResp)
-	if err == nil && len(sourceResp.Sources) > 0 && sourceResp.Sources[0].Type != "" {
+	if err == nil && len(sourceResp.Sources) > 0 && sourceResp.Sources[0].SourceID != "" {
 		for _, source := range sourceResp.Sources {
 			if workspaceID != "" && source.WorkspaceID != workspaceID {
 				continue
@@ -160,7 +160,7 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 	// Try parsing as DestinationResponse
 	var destResp airbyte.DestinationResponse
 	err = json.Unmarshal(jsonData, &destResp)
-	if err == nil && len(destResp.Destinations) > 0 && destResp.Destinations[0].Type != "" {
+	if err == nil && len(destResp.Destinations) > 0 && destResp.Destinations[0].DestinationID != "" {
 		for _, dest := range destResp.Destinations {
 			if workspaceID != "" && dest.WorkspaceID != workspaceID {
 				continue
