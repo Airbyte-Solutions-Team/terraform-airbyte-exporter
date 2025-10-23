@@ -202,13 +202,18 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 			return nil
 		}
 		// Check if it's an empty declarative source definition response by inspecting the raw JSON
-		// We need to differentiate from connections which also have a "data" array
 		var rawCheck map[string]interface{}
 		if json.Unmarshal(jsonData, &rawCheck) == nil {
-			if data, ok := rawCheck["data"].([]interface{}); ok && len(data) == 0 {
-				// Empty data array - could be declarative source defs OR connections
-				// Only treat as declarative source defs if we're fetching from the right endpoint
-				// For now, skip this case as it's ambiguous
+			if data, ok := rawCheck["data"]; ok {
+				// Handle both null and empty array cases
+				if data == nil {
+					// Empty response with null data - this is valid for declarative source definitions
+					return nil
+				}
+				if dataArray, ok := data.([]interface{}); ok && len(dataArray) == 0 {
+					// Empty data array - valid empty response
+					return nil
+				}
 			}
 		}
 	}
