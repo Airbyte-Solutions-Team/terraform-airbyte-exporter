@@ -1,7 +1,7 @@
 package converter
 
 import (
-	"api-to-terraform/internal/airbyte"
+	"api_to_terraform/internal/airbyte"
 	"encoding/json"
 	"fmt"
 	"net/http"

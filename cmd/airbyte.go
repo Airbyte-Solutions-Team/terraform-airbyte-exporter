@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	"api-to-terraform/internal/api"
-	"api-to-terraform/internal/converter"
+	"api_to_terraform/internal/api"
+	"api_to_terraform/internal/converter"
 	"encoding/json"
 	"fmt"
 	"os"
