@@ -1,11 +1,14 @@
 package converter
 
 import (
-	"api-to-terraform/internal/airbyte"
+	"api_to_terraform/internal/airbyte"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
@@ -20,6 +23,7 @@ type TerraformConverter struct {
 	sourceIDToName       map[string]string // Map source IDs to their resource names
 	destIDToName         map[string]string // Map destination IDs to their resource names
 	sourceDefinitionSeen map[string]bool   // Track seen source definitions to avoid duplicates
+	workspaceID          string            // Store workspace ID for variable references
 }
 
 // NewTerraformConverter creates a new Terraform converter
@@ -39,8 +43,117 @@ func (tc *TerraformConverter) SetSkipImports(skip bool) {
 	tc.skipImports = skip
 }
 
+// SetWorkspaceID sets the workspace ID for variable references
+func (tc *TerraformConverter) SetWorkspaceID(workspaceID string) {
+	tc.workspaceID = workspaceID
+}
+
+// getSourceReference returns the proper reference for a source ID
+func (tc *TerraformConverter) getSourceReference(sourceID string) string {
+	if sourceName, ok := tc.sourceIDToName[sourceID]; ok {
+		return fmt.Sprintf("airbyte_source_custom.%s.source_id", sourceName)
+	}
+	// Fallback to literal ID if mapping not found
+	return sourceID
+}
+
+// getDestinationReference returns the proper reference for a destination ID
+func (tc *TerraformConverter) getDestinationReference(destinationID string) string {
+	if destName, ok := tc.destIDToName[destinationID]; ok {
+		return fmt.Sprintf("airbyte_destination_custom.%s.destination_id", destName)
+	}
+	// Fallback to literal ID if mapping not found
+	return destinationID
+}
+
+// validateResource ensures all required fields are present and not empty
+func (tc *TerraformConverter) validateResource(resource map[string]interface{}, resourceName string) {
+	// Ensure workspace_id is always present
+	if resource["workspace_id"] == "" || resource["workspace_id"] == nil {
+		resource["workspace_id"] = tc.getWorkspaceReference()
+	}
+
+	// Ensure definition_id is not empty - extract from resource name if needed
+	if resource["definition_id"] == "" || resource["definition_id"] == nil {
+		// Extract definition ID from the resource name (last part after the last underscore)
+		parts := strings.Split(resourceName, "_")
+		if len(parts) > 0 {
+			lastPart := parts[len(parts)-1]
+			// Convert underscores back to hyphens for UUID format
+			definitionID := strings.ReplaceAll(lastPart, "_", "-")
+
+			// Ensure proper UUID format (36 characters with hyphens)
+			// If the extracted ID is too short, it's likely malformed
+			if len(definitionID) < 36 {
+				// Try to find a proper UUID pattern in the resource name
+				// Look for patterns like: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+				uuidPattern := `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
+				if matched := regexp.MustCompile(uuidPattern).FindString(resourceName); matched != "" {
+					definitionID = matched
+				} else {
+					// If no proper UUID found, skip this resource as it's likely malformed
+					fmt.Fprintf(os.Stderr, "Warning: Could not extract valid definition_id for resource '%s', skipping\n", resourceName)
+					return
+				}
+			}
+
+			resource["definition_id"] = definitionID
+		}
+	}
+
+	// Ensure configuration is always present
+	if resource["configuration"] == "" || resource["configuration"] == nil {
+		resource["configuration"] = "{}"
+	}
+}
+
+// getWorkspaceReference returns the proper workspace ID reference
+func (tc *TerraformConverter) getWorkspaceReference() string {
+	// Use the actual workspace ID value if available, otherwise use variable reference
+	if tc.workspaceID != "" {
+		return tc.workspaceID
+	}
+	// Fallback to variable reference
+	return "var.workspace_id"
+}
+
+// isComplexConnection determines if a connection requires manual configuration
+func (tc *TerraformConverter) isComplexConnection(sourceID, destinationID string) bool {
+	// Check if source or destination names suggest complexity
+	sourceName := ""
+	destName := ""
+
+	if name, ok := tc.sourceIDToName[sourceID]; ok {
+		sourceName = name
+	}
+	if name, ok := tc.destIDToName[destinationID]; ok {
+		destName = name
+	}
+
+	// Complex connectors that typically need manual configuration
+	complexSources := []string{"google_sheets", "salesforce", "hubspot", "stripe", "shopify"}
+	complexDestinations := []string{"hubspot", "salesforce", "stripe", "shopify", "bigquery", "snowflake"}
+
+	for _, complex := range complexSources {
+		if strings.Contains(strings.ToLower(sourceName), complex) {
+			return true
+		}
+	}
+
+	for _, complex := range complexDestinations {
+		if strings.Contains(strings.ToLower(destName), complex) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // Convert converts JSON data to Terraform HCL format
 func (tc *TerraformConverter) Convert(jsonData []byte, workspaceId string) (string, error) {
+	// Set the workspace ID for variable references
+	tc.SetWorkspaceID(workspaceId)
+
 	// Create a Terraform JSON structure
 	tfJSON := make(map[string]interface{})
 	tfJSON["resource"] = make(map[string]interface{})
@@ -68,23 +181,41 @@ func (tc *TerraformConverter) ResetVariables() {
 
 // GetVariablesHCL returns the HCL for all tracked variables
 func (tc *TerraformConverter) GetVariablesHCL() string {
-	if len(tc.variables) == 0 {
-		return ""
-	}
-
 	hclFile := hclwrite.NewEmptyFile()
 	rootBody := hclFile.Body()
 
-	// Sort variable names for consistent output
-	varNames := tc.getSortedVariableNames()
+	// Add basic Airbyte variables first
+	basicVariables := map[string]string{
+		"server_url":    "Airbyte server URL",
+		"client_id":     "Airbyte API client ID",
+		"client_secret": "Airbyte API client secret",
+		"workspace_id":  "Airbyte workspace ID",
+	}
 
-	for _, varName := range varNames {
+	for varName, description := range basicVariables {
 		varBlock := rootBody.AppendNewBlock("variable", []string{varName})
 		varBody := varBlock.Body()
 		varBody.SetAttributeRaw("type", hclwrite.Tokens{tc.tokenIdent("string")})
-		varBody.SetAttributeValue("description", cty.StringVal(tc.variables[varName]))
-		varBody.SetAttributeValue("sensitive", cty.BoolVal(true))
+		varBody.SetAttributeValue("description", cty.StringVal(description))
+		if varName == "client_id" || varName == "client_secret" {
+			varBody.SetAttributeValue("sensitive", cty.BoolVal(true))
+		}
 		rootBody.AppendNewline()
+	}
+
+	// Add other tracked variables if they exist
+	if len(tc.variables) > 0 {
+		// Sort variable names for consistent output
+		varNames := tc.getSortedVariableNames()
+
+		for _, varName := range varNames {
+			varBlock := rootBody.AppendNewBlock("variable", []string{varName})
+			varBody := varBlock.Body()
+			varBody.SetAttributeRaw("type", hclwrite.Tokens{tc.tokenIdent("string")})
+			varBody.SetAttributeValue("description", cty.StringVal(tc.variables[varName]))
+			varBody.SetAttributeValue("sensitive", cty.BoolVal(true))
+			rootBody.AppendNewline()
+		}
 	}
 
 	return string(hclFile.Bytes())
@@ -92,25 +223,112 @@ func (tc *TerraformConverter) GetVariablesHCL() string {
 
 // GetTfvarsContent returns the content for a .tfvars file with placeholder values
 func (tc *TerraformConverter) GetTfvarsContent() string {
-	if len(tc.variables) == 0 {
-		return ""
-	}
-
 	var builder strings.Builder
 	builder.WriteString("# Terraform variables file for Airbyte secrets\n")
 	builder.WriteString("# Replace the placeholder values with your actual secrets\n")
 	builder.WriteString("# This file should be kept secure and not committed to version control\n\n")
 
-	// Sort variable names for consistent output
-	varNames := tc.getSortedVariableNames()
+	// Add Airbyte API credentials section
+	builder.WriteString("# Destination Airbyte API credentials\n")
+	builder.WriteString("server_url    = \"YOUR_AIRBYTE_SERVER_URL\"\n")
+	builder.WriteString("client_id     = \"YOUR_AIRBYTE_CLIENT_ID\"\n")
+	builder.WriteString("client_secret = \"YOUR_AIRBYTE_CLIENT_SECRET\"\n")
+	builder.WriteString("workspace_id  = \"YOUR_AIRBYTE_WORKSPACE_ID\"\n\n")
 
-	for _, varName := range varNames {
-		// Add comment with description
-		builder.WriteString(fmt.Sprintf("# %s\n", tc.variables[varName]))
-		// Add variable assignment with placeholder
-		builder.WriteString(fmt.Sprintf("%s = \"PLACEHOLDER_VALUE_CHANGE_ME\"\n\n", varName))
+	// Add other variables if they exist
+	if len(tc.variables) > 0 {
+		// Sort variable names for consistent output
+		varNames := tc.getSortedVariableNames()
+
+		for _, varName := range varNames {
+			// Add comment with description
+			builder.WriteString(fmt.Sprintf("# %s\n", tc.variables[varName]))
+			// Add variable assignment with placeholder
+			builder.WriteString(fmt.Sprintf("%s = \"PLACEHOLDER_VALUE_CHANGE_ME\"\n\n", varName))
+		}
 	}
 
+	return builder.String()
+}
+
+// GitHubReleaseResponse represents the response from GitHub API
+type GitHubReleaseResponse struct {
+	TagName string `json:"tag_name"`
+}
+
+// GetLatestAirbyteProviderVersion fetches the latest version of the Airbyte provider from GitHub
+func GetLatestAirbyteProviderVersion() (string, error) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	url := "https://api.github.com/repos/airbytehq/terraform-provider-airbyte/releases/latest"
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch latest release: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+	}
+
+	var releaseResp GitHubReleaseResponse
+	if err := json.NewDecoder(resp.Body).Decode(&releaseResp); err != nil {
+		return "", fmt.Errorf("failed to decode GitHub response: %w", err)
+	}
+
+	if releaseResp.TagName == "" {
+		return "", fmt.Errorf("no tag name found in GitHub response")
+	}
+
+	// Remove 'v' prefix if present
+	latestVersion := strings.TrimPrefix(releaseResp.TagName, "v")
+
+	return latestVersion, nil
+}
+
+// GetProvidersContent returns the content for a providers.tf file
+func (tc *TerraformConverter) GetProvidersContent(providerVersion string, skipVersionCheck bool) string {
+	var builder strings.Builder
+
+	var latestVersion string
+	var err error
+
+	if providerVersion != "" {
+		// Use the specified version
+		latestVersion = providerVersion
+		fmt.Fprintf(os.Stderr, "Using specified Airbyte provider version: %s\n", latestVersion)
+	} else if skipVersionCheck {
+		// Use fallback version without checking
+		latestVersion = "0.13.0"
+		fmt.Fprintf(os.Stderr, "Using fallback Airbyte provider version: %s\n", latestVersion)
+	} else {
+		// Try to get the latest version, fallback to a known good version if it fails
+		latestVersion, err = GetLatestAirbyteProviderVersion()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to fetch latest Airbyte provider version: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Using fallback version 0.13.0\n")
+			latestVersion = "0.13.0" // Fallback to a known recent version
+		} else {
+			fmt.Fprintf(os.Stderr, "Using latest Airbyte provider version: %s\n", latestVersion)
+		}
+	}
+
+	builder.WriteString("terraform {\n")
+	builder.WriteString("  required_providers {\n")
+	builder.WriteString("    airbyte = {\n")
+	builder.WriteString("      source  = \"airbytehq/airbyte\"\n")
+	builder.WriteString(fmt.Sprintf("      version = \"%s\"\n", latestVersion))
+	builder.WriteString("    }\n")
+	builder.WriteString("  }\n")
+	builder.WriteString("}\n\n")
+	builder.WriteString("provider \"airbyte\" {\n")
+	builder.WriteString("  server_url   = var.server_url\n")
+	builder.WriteString("  client_id    = var.client_id\n")
+	builder.WriteString("  client_secret = var.client_secret\n")
+	builder.WriteString("}\n")
 	return builder.String()
 }
 
@@ -141,9 +359,25 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 	}
 
 	// TODO: Rework this to avoid code duplication - maybe use reflection or a common interface
+	// Try parsing as ConnectionResponse FIRST (most specific)
+	var connResp airbyte.ConnectionResponse
+	err := json.Unmarshal(jsonData, &connResp)
+	if err == nil && len(connResp.Connections) > 0 && connResp.Connections[0].ConnectionID != "" {
+		for _, conn := range connResp.Connections {
+			if workspaceID != "" && conn.WorkspaceID != workspaceID {
+				continue
+			}
+			tc.addConnectionToJSON(resources, conn, &imports)
+		}
+		tfJSON["import"] = imports
+		return nil
+	} else {
+		fmt.Fprintf(os.Stderr, "ConnectionResponse unmarshal error: %v\n", err)
+	}
+
 	// Try parsing as SourceResponse
 	var sourceResp airbyte.SourceResponse
-	err := json.Unmarshal(jsonData, &sourceResp)
+	err = json.Unmarshal(jsonData, &sourceResp)
 	if err == nil && len(sourceResp.Sources) > 0 && sourceResp.Sources[0].SourceID != "" {
 		for _, source := range sourceResp.Sources {
 			if workspaceID != "" && source.WorkspaceID != workspaceID {
@@ -171,22 +405,6 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 		return nil
 	} else {
 		fmt.Fprintf(os.Stderr, "DestinationResponse unmarshal error: %v\n", err)
-	}
-
-	// Try parsing as ConnectionResponse
-	var connResp airbyte.ConnectionResponse
-	err = json.Unmarshal(jsonData, &connResp)
-	if err == nil && len(connResp.Connections) > 0 && connResp.Connections[0].ConnectionID != "" {
-		for _, conn := range connResp.Connections {
-			if workspaceID != "" && conn.WorkspaceID != workspaceID {
-				continue
-			}
-			tc.addConnectionToJSON(resources, conn, &imports)
-		}
-		tfJSON["import"] = imports
-		return nil
-	} else {
-		fmt.Fprintf(os.Stderr, "ConnectionResponse unmarshal error: %v\n", err)
 	}
 
 	// Try parsing as DeclarativeSourceDefinitionResponse
@@ -458,6 +676,12 @@ func (tc *TerraformConverter) writeAttribute(body *hclwrite.Body, key string, va
 			// This is a resource reference - write without quotes
 			refContent := v[2 : len(v)-1] // Remove ${ and }
 			body.SetAttributeRaw(key, hclwrite.Tokens{tc.tokenIdent(refContent)})
+		} else if strings.HasPrefix(v, "var.") {
+			// This is a variable reference - write without quotes
+			body.SetAttributeRaw(key, hclwrite.Tokens{tc.tokenIdent(v)})
+		} else if strings.HasPrefix(v, "airbyte_source_custom.") || strings.HasPrefix(v, "airbyte_destination_custom.") {
+			// This is a Terraform resource reference - write without quotes
+			body.SetAttributeRaw(key, hclwrite.Tokens{tc.tokenIdent(v)})
 		} else if key == "configuration" {
 			// Check if this is a configuration field - always use jsonencode for consistency
 			tc.writeInterpolatedString(body, key, v)
@@ -883,6 +1107,16 @@ func (tc *TerraformConverter) addStreamsArrayTokens(tokens *hclwrite.Tokens, lis
 
 // addSourceToJSON adds a source to the Terraform JSON structure
 func (tc *TerraformConverter) addSourceToJSON(resources map[string]interface{}, source airbyte.Source, imports *[]interface{}) {
+	// Validate that this is actually a source and not malformed connection data
+	if source.SourceID == "" {
+		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed source '%s' - missing SourceID\n", source.Name)
+		return
+	}
+	if source.SourceDefinitionID == "" {
+		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed source '%s' - missing SourceDefinitionID\n", source.Name)
+		return
+	}
+
 	resourceType := "airbyte_source_custom"
 	resourceName := tc.sanitizeName(fmt.Sprintf("%s_%s", source.Name, source.SourceID))
 
@@ -894,9 +1128,12 @@ func (tc *TerraformConverter) addSourceToJSON(resources map[string]interface{}, 
 
 	resource := map[string]interface{}{
 		"name":          source.Name,
-		"workspace_id":  source.WorkspaceID,
+		"workspace_id":  tc.getWorkspaceReference(),
 		"definition_id": source.SourceDefinitionID,
 	}
+
+	// Validate and ensure all required fields are present
+	tc.validateResource(resource, resourceName)
 
 	if len(source.ConnectionConfiguration) > 0 {
 		// marshal the configuration map to a JSON string
@@ -905,26 +1142,39 @@ func (tc *TerraformConverter) addSourceToJSON(resources map[string]interface{}, 
 		processedConfig := tc.processConfiguration(string(configJSON), resourceType, resourceName)
 		resource["configuration"] = processedConfig
 	}
+	// Note: Empty configuration is handled by validateResource()
 
 	typeMap[resourceName] = resource
 
 	// Track this source ID to resource name mapping
-	tc.sourceIDToName[source.SourceID] = fmt.Sprintf("%s.%s", resourceType, resourceName)
+	tc.sourceIDToName[source.SourceID] = resourceName
 
-	// Add import block
-	importBlock := map[string]interface{}{
-		"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
-		"id": source.SourceID,
+	// Add import block (only if not skipping imports)
+	if !tc.skipImports {
+		importBlock := map[string]interface{}{
+			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
+			"id": source.SourceID,
+		}
+		*imports = append(*imports, importBlock)
+
+		// Store comment for this import
+		importKey := fmt.Sprintf("%s.%s", resourceType, resourceName)
+		tc.importComments[importKey] = fmt.Sprintf("Source: %s", source.Name)
 	}
-	*imports = append(*imports, importBlock)
-
-	// Store comment for this import
-	importKey := fmt.Sprintf("%s.%s", resourceType, resourceName)
-	tc.importComments[importKey] = fmt.Sprintf("Source: %s", source.Name)
 }
 
 // addDestinationToJSON adds a destination to the Terraform JSON structure
 func (tc *TerraformConverter) addDestinationToJSON(resources map[string]interface{}, dest airbyte.Destination, imports *[]interface{}) {
+	// Validate that this is actually a destination and not malformed connection data
+	if dest.DestinationID == "" {
+		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed destination '%s' - missing DestinationID\n", dest.Name)
+		return
+	}
+	if dest.DestinationDefinitionID == "" {
+		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed destination '%s' - missing DestinationDefinitionID\n", dest.Name)
+		return
+	}
+
 	resourceType := "airbyte_destination_custom"
 	resourceName := tc.sanitizeName(fmt.Sprintf("%s_%s", dest.Name, dest.DestinationID))
 
@@ -936,9 +1186,12 @@ func (tc *TerraformConverter) addDestinationToJSON(resources map[string]interfac
 
 	resource := map[string]interface{}{
 		"name":          dest.Name,
-		"workspace_id":  dest.WorkspaceID,
+		"workspace_id":  tc.getWorkspaceReference(),
 		"definition_id": dest.DestinationDefinitionID,
 	}
+
+	// Validate and ensure all required fields are present
+	tc.validateResource(resource, resourceName)
 
 	if len(dest.ConnectionConfiguration) > 0 {
 		// marshal the configuration map to a JSON string
@@ -947,22 +1200,25 @@ func (tc *TerraformConverter) addDestinationToJSON(resources map[string]interfac
 		processedConfig := tc.processConfiguration(string(configJSON), resourceType, resourceName)
 		resource["configuration"] = processedConfig
 	}
+	// Note: Empty configuration is handled by validateResource()
 
 	typeMap[resourceName] = resource
 
 	// Track this destination ID to resource name mapping
-	tc.destIDToName[dest.DestinationID] = fmt.Sprintf("%s.%s", resourceType, resourceName)
+	tc.destIDToName[dest.DestinationID] = resourceName
 
-	// Add import block
-	importBlock := map[string]interface{}{
-		"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
-		"id": dest.DestinationID,
+	// Add import block (only if not skipping imports)
+	if !tc.skipImports {
+		importBlock := map[string]interface{}{
+			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
+			"id": dest.DestinationID,
+		}
+		*imports = append(*imports, importBlock)
+
+		// Store comment for this import
+		importKey := fmt.Sprintf("%s.%s", resourceType, resourceName)
+		tc.importComments[importKey] = fmt.Sprintf("Destination: %s", dest.Name)
 	}
-	*imports = append(*imports, importBlock)
-
-	// Store comment for this import
-	importKey := fmt.Sprintf("%s.%s", resourceType, resourceName)
-	tc.importComments[importKey] = fmt.Sprintf("Destination: %s", dest.Name)
 }
 
 // parseSyncMode parses the combined syncMode string from the API
@@ -992,8 +1248,29 @@ func parseSyncMode(combinedMode string) (syncMode string, destSyncMode string) {
 
 // addConnectionToJSON adds a connection to the Terraform JSON structure
 func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface{}, conn airbyte.Connection, imports *[]interface{}) {
+	// Validate that this is actually a connection and not malformed data
+	if conn.ConnectionID == "" {
+		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed connection '%s' - missing ConnectionID\n", conn.Name)
+		return
+	}
+	if conn.SourceID == "" {
+		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed connection '%s' - missing SourceID\n", conn.Name)
+		return
+	}
+	if conn.DestinationID == "" {
+		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed connection '%s' - missing DestinationID\n", conn.Name)
+		return
+	}
+
 	resourceType := "airbyte_connection"
 	resourceName := tc.sanitizeName(fmt.Sprintf("%s_%s", conn.Name, conn.ConnectionID))
+
+	// Check if this is a complex connection that might need manual configuration
+	if tc.isComplexConnection(conn.SourceID, conn.DestinationID) {
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: Complex connection detected: %s\n", conn.Name)
+		fmt.Fprintf(os.Stderr, "⚠️  This connection may require manual configuration in Airbyte UI due to schema discovery and field mapping requirements.\n")
+		fmt.Fprintf(os.Stderr, "⚠️  Consider creating this connection manually if Terraform deployment fails.\n\n")
+	}
 
 	if _, ok := resources[resourceType]; !ok {
 		resources[resourceType] = make(map[string]interface{})
@@ -1001,36 +1278,22 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 
 	typeMap := resources[resourceType].(map[string]interface{})
 
-	// Determine source_id and destination_id values based on whether we're using imports
-	var sourceID interface{}
-	var destinationID interface{}
-
-	// Use resource references when not skipping imports
-	if sourceName, ok := tc.sourceIDToName[conn.SourceID]; ok {
-		sourceID = fmt.Sprintf("${%s.source_id}", sourceName)
-	} else {
-		// Fallback to literal ID if mapping not found
-		sourceID = conn.SourceID
-	}
-
-	if destName, ok := tc.destIDToName[conn.DestinationID]; ok {
-		destinationID = fmt.Sprintf("${%s.destination_id}", destName)
-	} else {
-		// Fallback to literal ID if mapping not found
-		destinationID = conn.DestinationID
-	}
-
+	// Create the connection resource with proper variable references
 	resource := map[string]interface{}{
 		"name":           conn.Name,
-		"source_id":      sourceID,
-		"destination_id": destinationID,
+		"source_id":      tc.getSourceReference(conn.SourceID),
+		"destination_id": tc.getDestinationReference(conn.DestinationID),
 		// Note: "status" field is intentionally omitted as it's read-only in Terraform
 	}
 
-	// Add optional fields
+	// Add optional fields with sensible defaults
 	if conn.NamespaceDefinition != "" {
 		resource["namespace_definition"] = conn.NamespaceDefinition
+	} else {
+		// Default to destination namespace
+		resource["namespace_definition"] = "destination"
 	}
+
 	if conn.NamespaceFormat != "" {
 		resource["namespace_format"] = conn.NamespaceFormat
 	}
@@ -1039,6 +1302,9 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 	}
 	if conn.NonBreakingSchemaUpdatesBehavior != "" {
 		resource["non_breaking_schema_updates_behavior"] = conn.NonBreakingSchemaUpdatesBehavior
+	} else {
+		// Default to ignore for better compatibility
+		resource["non_breaking_schema_updates_behavior"] = "ignore"
 	}
 
 	// Add schedule if present
@@ -1055,13 +1321,12 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 
 			cronExpr, err := ParseBasicTimingToCron(conn.Schedule.BasicTiming, refTimestamp)
 			if err != nil {
-				// If conversion fails, log error and keep original basic_timing
+				// If conversion fails, use manual schedule as fallback
 				fmt.Fprintf(os.Stderr, "⚠️  Warning: Failed to convert BasicTiming '%s' to cron for connection '%s': %v\n",
 					conn.Schedule.BasicTiming, conn.Name, err)
-				fmt.Fprintf(os.Stderr, "⚠️  Note: Basic schedule types are not supported in Terraform. Manual conversion required.\n")
+				fmt.Fprintf(os.Stderr, "⚠️  Note: Using manual schedule as fallback. Please configure schedule manually in Airbyte UI.\n")
 				resource["schedule"] = map[string]interface{}{
-					"schedule_type": conn.Schedule.ScheduleType,
-					"basic_timing":  conn.Schedule.BasicTiming,
+					"schedule_type": "manual",
 				}
 			} else {
 				// Successfully converted to cron, use "cron" schedule type
@@ -1085,13 +1350,60 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 				resource["schedule"].(map[string]interface{})["basic_timing"] = conn.Schedule.BasicTiming
 			}
 		}
+	} else {
+		// Default to manual schedule if no schedule is specified
+		resource["schedule"] = map[string]interface{}{
+			"schedule_type": "manual",
+		}
 	}
+
 	if conn.Configurations == nil || conn.Configurations.Streams == nil {
 		return
 	}
 	// Add configurations block - convert streams to []interface{} for proper handling
 	streamsAsInterface := make([]interface{}, len(conn.Configurations.Streams))
 	for i, stream := range conn.Configurations.Streams {
+		// Process mappers to fix the configuration structure
+		if mappers, ok := stream["mappers"].([]interface{}); ok {
+			processedMappers := make([]interface{}, len(mappers))
+			for j, mapper := range mappers {
+				if mapperMap, ok := mapper.(map[string]interface{}); ok {
+					processedMapper := make(map[string]interface{})
+
+					// Copy basic fields
+					if mapperType, ok := mapperMap["type"].(string); ok {
+						processedMapper["type"] = mapperType
+					}
+					if mapperID, ok := mapperMap["id"].(string); ok {
+						processedMapper["id"] = mapperID
+					}
+
+					// Process mapper configuration based on type
+					if mapperConfig, ok := mapperMap["mapperConfiguration"].(map[string]interface{}); ok {
+						if mapperType, ok := mapperMap["type"].(string); ok {
+							switch mapperType {
+							case "field-renaming":
+								// For field-renaming, create proper nested structure
+								processedMapper["mapper_configuration"] = map[string]interface{}{
+									"field_renaming": map[string]interface{}{
+										"new_field_name":      mapperConfig["newFieldName"],
+										"original_field_name": mapperConfig["originalFieldName"],
+									},
+								}
+							default:
+								// For other types, use the original configuration
+								processedMapper["mapper_configuration"] = mapperConfig
+							}
+						}
+					}
+
+					processedMappers[j] = processedMapper
+				} else {
+					processedMappers[j] = mapper
+				}
+			}
+			stream["mappers"] = processedMappers
+		}
 		streamsAsInterface[i] = stream
 	}
 	resource["configurations"] = map[string]interface{}{
@@ -1100,16 +1412,18 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 
 	typeMap[resourceName] = resource
 
-	// Add import block
-	importBlock := map[string]interface{}{
-		"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
-		"id": conn.ConnectionID,
-	}
-	*imports = append(*imports, importBlock)
+	// Add import block (only if not skipping imports)
+	if !tc.skipImports {
+		importBlock := map[string]interface{}{
+			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
+			"id": conn.ConnectionID,
+		}
+		*imports = append(*imports, importBlock)
 
-	// Store comment for this import
-	importKey := fmt.Sprintf("%s.%s", resourceType, resourceName)
-	tc.importComments[importKey] = fmt.Sprintf("Connection: %s", conn.Name)
+		// Store comment for this import
+		importKey := fmt.Sprintf("%s.%s", resourceType, resourceName)
+		tc.importComments[importKey] = fmt.Sprintf("Connection: %s", conn.Name)
+	}
 }
 
 // addDeclarativeSourceDefinitionToJSON adds a declarative source definition to the Terraform JSON structure
@@ -1149,14 +1463,16 @@ func (tc *TerraformConverter) addDeclarativeSourceDefinitionToJSON(resources map
 
 	typeMap[resourceName] = resource
 
-	// Add import block
-	importBlock := map[string]interface{}{
-		"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
-		"id": def.ID,
-	}
-	*imports = append(*imports, importBlock)
+	// Add import block (only if not skipping imports)
+	if !tc.skipImports {
+		importBlock := map[string]interface{}{
+			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
+			"id": def.ID,
+		}
+		*imports = append(*imports, importBlock)
 
-	// Store comment for this import
-	importKey := fmt.Sprintf("%s.%s", resourceType, resourceName)
-	tc.importComments[importKey] = fmt.Sprintf("Declarative Source Definition: %s", def.Name)
+		// Store comment for this import
+		importKey := fmt.Sprintf("%s.%s", resourceType, resourceName)
+		tc.importComments[importKey] = fmt.Sprintf("Declarative Source Definition: %s", def.Name)
+	}
 }

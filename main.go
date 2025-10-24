@@ -1,7 +1,7 @@
 package main
 
 import (
-	"api-to-terraform/cmd"
+	"api_to_terraform/cmd"
 	"log"
 )
 

@@ -6,219 +6,197 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
-	"os"
 	"time"
 )
 
-// Client represents an HTTP API client
+// Client represents an API client
 type Client struct {
 	baseURL      string
-	apiKey       string
 	clientID     string
 	clientSecret string
 	httpClient   *http.Client
-}
-
-type ApiKeyResponse struct {
-	AccessToken string `json:"access_token"`
-	ExpiresIn   int    `json:"expires_in"`
-	TokenType   string `json:"token_type"`
+	accessToken  string
+	tokenExpiry  time.Time
 }
 
 // NewClient creates a new API client
-func NewClient(baseURL, clientID string, clientSecret string) *Client {
+func NewClient(baseURL, clientID, clientSecret string) *Client {
 	return &Client{
 		baseURL:      baseURL,
-		apiKey:       "",
 		clientID:     clientID,
 		clientSecret: clientSecret,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		httpClient:   &http.Client{},
 	}
 }
 
-// PaginatedResponse represents a paginated API response
-type PaginatedResponse struct {
-	Data     json.RawMessage `json:"data"`
-	Next     string          `json:"next,omitempty"`
-	Previous string          `json:"previous,omitempty"`
+// TokenRequest represents the request body for getting an access token
+type TokenRequest struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
 }
 
-// Get performs a GET request to the specified endpoint with pagination support
-// It automatically follows "next" links to retrieve all pages and merges the results
-func (c *Client) Get(endpoint string, workspaceId *string) ([]byte, error) {
-	if c.apiKey == "" && c.clientID != "" && c.clientSecret != "" {
-		apiKey, err := c.generateApiKey()
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate API key: %w", err)
-		}
-		c.apiKey = apiKey
-	}
-
-	// Build initial URL with limit parameter
-	apiUrl, err := url.JoinPath(c.baseURL, endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("failed to join URL paths: %w", err)
-	}
-
-	u, err := url.Parse(apiUrl)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse URL: %w", err)
-	}
-
-	q := u.Query()
-	// Set limit to 100 for better performance
-	q.Set("limit", "100")
-	// Add workspaceId as query parameter if provided
-	if workspaceId != nil && *workspaceId != "" {
-		q.Set("workspaceIds", *workspaceId)
-	}
-	u.RawQuery = q.Encode()
-	apiUrl = u.String()
-
-	// Collect all data across pages
-	var allData []json.RawMessage
-	currentURL := apiUrl
-	pageCount := 0
-
-	for {
-		pageCount++
-		fmt.Fprintf(os.Stderr, "Fetching page %d from: %s\n", pageCount, currentURL)
-
-		body, err := c.fetchPage(currentURL)
-		if err != nil {
-			return nil, err
-		}
-
-		// Try to parse as paginated response
-		var paginatedResp PaginatedResponse
-		if err := json.Unmarshal(body, &paginatedResp); err != nil {
-			// Not a paginated response, return the body as-is
-			fmt.Fprintf(os.Stderr, "Response is not paginated, returning single page\n")
-			return body, nil
-		}
-
-		// Add this page's data to our collection
-		allData = append(allData, paginatedResp.Data)
-
-		// Check if there's a next page
-		if paginatedResp.Next == "" {
-			fmt.Fprintf(os.Stderr, "Reached last page, total pages fetched: %d\n", pageCount)
-			break
-		}
-
-		// Follow the next link
-		currentURL = paginatedResp.Next
-	}
-
-	// Merge all pages into a single response
-	mergedData, err := c.mergePages(allData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to merge paginated results: %w", err)
-	}
-
-	// Return as a response with "data" field
-	finalResponse := map[string]interface{}{
-		"data": mergedData,
-	}
-	return json.Marshal(finalResponse)
+// TokenResponse represents the response from the token endpoint
+type TokenResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   int    `json:"expires_in"`
 }
 
-// fetchPage performs a single HTTP GET request
-func (c *Client) fetchPage(urlStr string) ([]byte, error) {
-	req, err := http.NewRequest("GET", urlStr, nil)
+// getAccessToken retrieves an access token using the Airbyte API
+func (c *Client) getAccessToken() error {
+	// Check if we have a valid token that hasn't expired
+	if c.accessToken != "" && time.Now().Before(c.tokenExpiry) {
+		return nil
+	}
+
+	// Prepare the token request
+	tokenReq := TokenRequest{
+		ClientID:     c.clientID,
+		ClientSecret: c.clientSecret,
+	}
+
+	// Convert to JSON
+	jsonData, err := json.Marshal(tokenReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return fmt.Errorf("failed to marshal token request: %w", err)
 	}
 
-	// Add authentication if API key is provided
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
+	// Make the token request
+	tokenURL := c.baseURL + "/v1/applications/token"
+	req, err := http.NewRequest("POST", tokenURL, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("the Airbyte API returned status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("failed to create token request: %w", err)
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	return body, nil
-}
-
-// mergePages merges multiple pages of data into a single array
-func (c *Client) mergePages(pages []json.RawMessage) ([]interface{}, error) {
-	var merged []interface{}
-
-	for _, page := range pages {
-		var pageData []interface{}
-		if err := json.Unmarshal(page, &pageData); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal page data: %w", err)
-		}
-		merged = append(merged, pageData...)
-	}
-
-	return merged, nil
-}
-
-// GetWorkspaces fetches all workspaces from the Airbyte API
-func (c *Client) GetWorkspaces() ([]byte, error) {
-	return c.Get("/v1/workspaces", nil)
-}
-
-func (c *Client) generateApiKey() (string, error) {
-	req, err := http.NewRequest("POST", c.baseURL+"/v1/applications/token", nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Add JSON body with client_id and client_secret
-	payload := map[string]string{
-		"client_id":     c.clientID,
-		"client_secret": c.clientSecret,
-	}
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal auth payload: %w", err)
-	}
-	req.Body = io.NopCloser(bytes.NewReader(payloadBytes))
-	req.ContentLength = int64(len(payloadBytes))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
+		return fmt.Errorf("failed to make token request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("the Airbyte API returned status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse the response
+	var tokenResp TokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return fmt.Errorf("failed to decode token response: %w", err)
+	}
+
+	// Store the token and set expiry (tokens are valid for 3 minutes according to docs)
+	c.accessToken = tokenResp.AccessToken
+	c.tokenExpiry = time.Now().Add(3 * time.Minute)
+
+	return nil
+}
+
+// Get makes a GET request to the specified endpoint
+func (c *Client) Get(endpoint string, workspaceID *string) ([]byte, error) {
+	// Get a valid access token first
+	if err := c.getAccessToken(); err != nil {
+		return nil, fmt.Errorf("failed to get access token: %w", err)
+	}
+
+	url := c.baseURL + endpoint
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add Bearer token authentication
+	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+
+	// Add workspace ID as query parameter if provided
+	if workspaceID != nil && *workspaceID != "" {
+		q := req.URL.Query()
+		q.Add("workspaceId", *workspaceID)
+		req.URL.RawQuery = q.Encode()
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
-	}
-	var apiKeyResp ApiKeyResponse
-	err = json.Unmarshal(body, &apiKeyResp)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	return apiKeyResp.AccessToken, nil
+	return body, nil
+}
+
+// Post makes a POST request to the specified endpoint
+func (c *Client) Post(endpoint string, data interface{}) ([]byte, error) {
+	// Get a valid access token first
+	if err := c.getAccessToken(); err != nil {
+		return nil, fmt.Errorf("failed to get access token: %w", err)
+	}
+
+	url := c.baseURL + endpoint
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal data: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// Add Bearer token authentication
+	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	return body, nil
+}
+
+// GetWorkspaces fetches all workspaces
+func (c *Client) GetWorkspaces() ([]byte, error) {
+	return c.Get("/v1/workspaces", nil)
+}
+
+// GetSources fetches sources for a workspace
+func (c *Client) GetSources(workspaceID string) ([]byte, error) {
+	return c.Get("/v1/sources", &workspaceID)
+}
+
+// GetDestinations fetches destinations for a workspace
+func (c *Client) GetDestinations(workspaceID string) ([]byte, error) {
+	return c.Get("/v1/destinations", &workspaceID)
+}
+
+// GetConnections fetches connections for a workspace
+func (c *Client) GetConnections(workspaceID string) ([]byte, error) {
+	return c.Get("/v1/connections", &workspaceID)
 }

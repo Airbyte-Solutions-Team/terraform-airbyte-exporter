@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	"api-to-terraform/internal/api"
-	"api-to-terraform/internal/converter"
+	"api_to_terraform/internal/api"
+	"api_to_terraform/internal/converter"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -36,11 +36,21 @@ func init() {
 
 	airbyteExportCmd.Flags().StringP("output-dir", "d", ".", "Directory to write Terraform files")
 	airbyteExportCmd.Flags().Bool("split", false, "Write each resource type to a separate file")
-	airbyteExportCmd.Flags().Bool("skip-imports", false, "Skip generating import blocks")
+	airbyteExportCmd.Flags().String("workspace", "", "Airbyte workspace ID to export")
+	airbyteExportCmd.Flags().Bool("skip-imports", true, "Skip generating import blocks (default: true)")
+	airbyteExportCmd.Flags().String("provider-version", "", "Specific Airbyte provider version to use (default: fetch latest)")
+	airbyteExportCmd.Flags().Bool("skip-version-check", false, "Skip fetching latest provider version and use fallback")
+	airbyteExportCmd.Flags().Bool("include-variables", true, "Include variables.tf content inside airbyte.tf (single file mode only, default: true)")
+	airbyteExportCmd.Flags().Bool("separate-variables", false, "Generate separate variables.tf file instead of including in airbyte.tf")
 
 	viper.BindPFlag("airbyte.output-dir", airbyteExportCmd.Flags().Lookup("output-dir"))
 	viper.BindPFlag("airbyte.split", airbyteExportCmd.Flags().Lookup("split"))
+	viper.BindPFlag("api.workspace", airbyteExportCmd.Flags().Lookup("workspace"))
 	viper.BindPFlag("airbyte.skip-imports", airbyteExportCmd.Flags().Lookup("skip-imports"))
+	viper.BindPFlag("airbyte.provider-version", airbyteExportCmd.Flags().Lookup("provider-version"))
+	viper.BindPFlag("airbyte.skip-version-check", airbyteExportCmd.Flags().Lookup("skip-version-check"))
+	viper.BindPFlag("airbyte.include-variables", airbyteExportCmd.Flags().Lookup("include-variables"))
+	viper.BindPFlag("airbyte.separate-variables", airbyteExportCmd.Flags().Lookup("separate-variables"))
 }
 
 func runAirbyteExport(cmd *cobra.Command, args []string) error {
@@ -50,6 +60,9 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	outputDir := viper.GetString("airbyte.output-dir")
 	splitFiles := viper.GetBool("airbyte.split")
 	skipImports := viper.GetBool("airbyte.skip-imports")
+	providerVersion := viper.GetString("airbyte.provider-version")
+	skipVersionCheck := viper.GetBool("airbyte.skip-version-check")
+	separateVariables := viper.GetBool("airbyte.separate-variables")
 
 	if baseURL == "" {
 		baseURL = "https://api.airbyte.com"
@@ -190,25 +203,30 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	tfvarsContent := conv.GetTfvarsContent()
 
 	if splitFiles {
-		// Write variables file first if there are any
-		if variablesHCL != "" {
-			variablesPath := fmt.Sprintf("%s/variables.tf", outputDir)
-			err := os.WriteFile(variablesPath, []byte(variablesHCL), 0644)
-			if err != nil {
-				return fmt.Errorf("failed to write variables.tf: %w", err)
-			}
-			fmt.Fprintf(os.Stderr, "Wrote variables to %s\n", variablesPath)
+		// Write variables file (always includes basic Airbyte variables)
+		variablesPath := fmt.Sprintf("%s/variables.tf", outputDir)
+		err := os.WriteFile(variablesPath, []byte(variablesHCL), 0644)
+		if err != nil {
+			return fmt.Errorf("failed to write variables.tf: %w", err)
 		}
+		fmt.Fprintf(os.Stderr, "Wrote variables to %s\n", variablesPath)
 
-		// Write tfvars file if there are variables
-		if tfvarsContent != "" {
-			tfvarsPath := fmt.Sprintf("%s/terraform.tfvars.example", outputDir)
-			err := os.WriteFile(tfvarsPath, []byte(tfvarsContent), 0644)
-			if err != nil {
-				return fmt.Errorf("failed to write terraform.tfvars.example: %w", err)
-			}
-			fmt.Fprintf(os.Stderr, "Wrote variable values template to %s\n", tfvarsPath)
+		// Write providers file
+		providersHCL := conv.GetProvidersContent(providerVersion, skipVersionCheck)
+		providersPath := fmt.Sprintf("%s/providers.tf", outputDir)
+		err = os.WriteFile(providersPath, []byte(providersHCL), 0644)
+		if err != nil {
+			return fmt.Errorf("failed to write providers.tf: %w", err)
 		}
+		fmt.Fprintf(os.Stderr, "Wrote providers to %s\n", providersPath)
+
+		// Write tfvars file (always includes Airbyte API credentials)
+		tfvarsPath := fmt.Sprintf("%s/terraform.tfvars.example", outputDir)
+		err = os.WriteFile(tfvarsPath, []byte(tfvarsContent), 0644)
+		if err != nil {
+			return fmt.Errorf("failed to write terraform.tfvars.example: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Wrote variable values template to %s\n", tfvarsPath)
 
 		// Write each resource file
 		for i, resource := range resources {
@@ -232,40 +250,66 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "Wrote declarative source definitions to %s\n", filepath)
 		}
 	} else {
-		// Write combined file with variables at the top
-		var finalOutput strings.Builder
-		if variablesHCL != "" {
-			finalOutput.WriteString(variablesHCL)
-			finalOutput.WriteString("\n")
-		}
-		finalOutput.WriteString(allTerraform.String())
-
-		filepath := fmt.Sprintf("%s/airbyte.tf", outputDir)
-		err := os.WriteFile(filepath, []byte(finalOutput.String()), 0644)
-		if err != nil {
-			return fmt.Errorf("failed to write airbyte.tf: %w", err)
-		}
-		fmt.Fprintf(os.Stderr, "Wrote all resources to %s\n", filepath)
-
-		// Write tfvars file if there are variables
-		if tfvarsContent != "" {
-			tfvarsPath := fmt.Sprintf("%s/terraform.tfvars.example", outputDir)
-			err := os.WriteFile(tfvarsPath, []byte(tfvarsContent), 0644)
+		// Handle variables based on separate-variables flag
+		if separateVariables {
+			// Generate separate variables.tf file
+			variablesPath := fmt.Sprintf("%s/variables.tf", outputDir)
+			err := os.WriteFile(variablesPath, []byte(variablesHCL), 0644)
 			if err != nil {
-				return fmt.Errorf("failed to write terraform.tfvars.example: %w", err)
+				return fmt.Errorf("failed to write variables.tf: %w", err)
 			}
-			fmt.Fprintf(os.Stderr, "Wrote variable values template to %s\n", tfvarsPath)
+			fmt.Fprintf(os.Stderr, "Wrote variables to %s\n", variablesPath)
+
+			// Write combined file without variables
+			filepath := fmt.Sprintf("%s/airbyte.tf", outputDir)
+			err = os.WriteFile(filepath, []byte(allTerraform.String()), 0644)
+			if err != nil {
+				return fmt.Errorf("failed to write airbyte.tf: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "Wrote all resources to %s\n", filepath)
+		} else {
+			// Include variables inside airbyte.tf (default behavior)
+			var finalOutput strings.Builder
+			if variablesHCL != "" {
+				finalOutput.WriteString(variablesHCL)
+				finalOutput.WriteString("\n")
+			}
+			finalOutput.WriteString(allTerraform.String())
+
+			filepath := fmt.Sprintf("%s/airbyte.tf", outputDir)
+			err := os.WriteFile(filepath, []byte(finalOutput.String()), 0644)
+			if err != nil {
+				return fmt.Errorf("failed to write airbyte.tf: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "Wrote all resources with variables to %s\n", filepath)
 		}
+
+		// Write providers file separately
+		providersHCL := conv.GetProvidersContent(providerVersion, skipVersionCheck)
+		providersPath := fmt.Sprintf("%s/providers.tf", outputDir)
+		err := os.WriteFile(providersPath, []byte(providersHCL), 0644)
+		if err != nil {
+			return fmt.Errorf("failed to write providers.tf: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Wrote providers to %s\n", providersPath)
+
+		// Write tfvars file (always includes Airbyte API credentials)
+		tfvarsPath := fmt.Sprintf("%s/terraform.tfvars.example", outputDir)
+		err = os.WriteFile(tfvarsPath, []byte(tfvarsContent), 0644)
+		if err != nil {
+			return fmt.Errorf("failed to write terraform.tfvars.example: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Wrote variable values template to %s\n", tfvarsPath)
 	}
 
 	// Print success message
 	hasDeclarativeDefs := declarativeDefsTerraform != ""
-	printSuccessMessage(outputDir, splitFiles, variablesHCL != "", tfvarsContent != "", skipImports, hasDeclarativeDefs)
+	printSuccessMessage(outputDir, splitFiles, variablesHCL != "", true, skipImports, hasDeclarativeDefs, separateVariables)
 
 	return nil
 }
 
-func printSuccessMessage(outputDir string, splitFiles bool, hasVariables bool, hasTfvars bool, skipImports bool, hasDeclarativeDefs bool) {
+func printSuccessMessage(outputDir string, splitFiles bool, hasVariables bool, hasTfvars bool, skipImports bool, hasDeclarativeDefs bool, separateVariables bool) {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "✅ Export completed successfully!")
 	fmt.Fprintln(os.Stderr, "")
@@ -278,12 +322,16 @@ func printSuccessMessage(outputDir string, splitFiles bool, hasVariables bool, h
 		if hasDeclarativeDefs {
 			fmt.Fprintf(os.Stderr, "  • %s/declarative_source_definitions.tf\n", outputDir)
 		}
-		if hasVariables {
-			fmt.Fprintf(os.Stderr, "  • %s/variables.tf\n", outputDir)
-		}
+		fmt.Fprintf(os.Stderr, "  • %s/variables.tf\n", outputDir)
 	} else {
 		fmt.Fprintf(os.Stderr, "  • %s/airbyte.tf\n", outputDir)
+		if separateVariables {
+			fmt.Fprintf(os.Stderr, "  • %s/variables.tf\n", outputDir)
+		}
 	}
+
+	// Always show providers.tf
+	fmt.Fprintf(os.Stderr, "  • %s/providers.tf\n", outputDir)
 
 	if hasTfvars {
 		fmt.Fprintf(os.Stderr, "  • %s/terraform.tfvars.example\n", outputDir)
@@ -297,8 +345,17 @@ func printSuccessMessage(outputDir string, splitFiles bool, hasVariables bool, h
 	fmt.Fprintln(os.Stderr, "  3. Verify all resource configurations before applying")
 
 	if hasTfvars {
-		fmt.Fprintln(os.Stderr, "  4. Copy terraform.tfvars.example to terraform.tfvars and fill in actual secret values")
+		fmt.Fprintln(os.Stderr, "  4. Copy terraform.tfvars.example to terraform.tfvars and update with your actual values:")
+		fmt.Fprintln(os.Stderr, "     • Airbyte API credentials (server_url, client_id, client_secret, workspace_id)")
+		fmt.Fprintln(os.Stderr, "     • Source and destination secrets")
 		fmt.Fprintln(os.Stderr, "  5. Ensure terraform.tfvars is added to .gitignore")
+		fmt.Fprintln(os.Stderr, "  6. Run 'terraform init' to initialize the Terraform working directory")
+		fmt.Fprintln(os.Stderr, "  7. Run 'terraform plan' to review the planned changes")
+		fmt.Fprintln(os.Stderr, "  8. Run 'terraform apply' to create the resources")
+	} else {
+		fmt.Fprintln(os.Stderr, "  4. Run 'terraform init' to initialize the Terraform working directory")
+		fmt.Fprintln(os.Stderr, "  5. Run 'terraform plan' to review the planned changes")
+		fmt.Fprintln(os.Stderr, "  6. Run 'terraform apply' to create the resources")
 	}
 
 	if !skipImports {
