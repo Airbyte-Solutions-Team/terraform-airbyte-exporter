@@ -1,7 +1,7 @@
 # Airbyte to Terraform Converter
 
 > [!NOTE]
-> This repository contains experimental code that is not supported like other [Airbyte](https://airbyte.com) projects, and is provided for reference purposes only. For assistance with this project, please use this repository's [Issues tab](https://github.com/user/existing-connectors-to-terraform/issues) to report any faults or feature requests.
+> This repository contains experimental code that is not supported like other [Airbyte](https://airbyte.com) projects, and is provided for reference purposes only. For assistance with this project, please use this repository's [Issues tab](https://github.com/Airbyte-Solutions-Team/existing-connectors-to-terraform/issues) to report any faults or feature requests.
 
 A CLI tool that fetches resources from the Airbyte API and converts them into Terraform files for easier migration or state management.
 
