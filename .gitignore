@@ -4,8 +4,8 @@
 .env
 
 # Binaries
-atfexport
-atfexport.exe
+abtfexport
+abtfexport.exe
 api-to-terraform
 api-to-terraform.exe
 dist/

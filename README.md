@@ -5,7 +5,7 @@
 > [!NOTE]
 > This repository contains experimental code that is not supported like other [Airbyte](https://airbyte.com) projects, and is provided for reference purposes only. For assistance with this project, please use this repository's [Issues tab](https://github.com/Airbyte-Solutions-Team/terraform-airbyte-exporter/issues) to report any faults or feature requests.
 
-A CLI tool (`atfexport`) that fetches resources from the Airbyte API and converts them into Terraform configuration files for easier migration to Infrastructure as Code.
+A CLI tool (`abtfexport`) that fetches resources from the Airbyte API and converts them into Terraform configuration files for easier migration to Infrastructure as Code.
 
 ## Features
 
@@ -22,7 +22,7 @@ Download the latest release for your platform from the [GitHub Releases](https:/
 ### Build from Source
 
 ```bash
-go build -o atfexport
+go build -o abtfexport
 ```
 
 ### Using Go Install
@@ -37,16 +37,16 @@ go install github.com/Airbyte-Solutions-Team/terraform-airbyte-exporter@latest
 
 ```bash
 # Export all Airbyte resources (sources, destinations, and connections) to Terraform
-atfexport --api-url https://api.airbyte.com --client-id "your-client-id" --client-secret "your-client-secret"
+abtfexport --api-url https://api.airbyte.com --client-id "your-client-id" --client-secret "your-client-secret"
 
 # Export from a specific workspace
-atfexport --workspace "workspace-id" --client-id "..." --client-secret "..."
+abtfexport --workspace "workspace-id" --client-id "..." --client-secret "..."
 
 # Export a specific connection only
-atfexport --connection-id "connection-id" --client-id "..." --client-secret "..."
+abtfexport --connection-id "connection-id" --client-id "..." --client-secret "..."
 
 # Split resources into separate files
-atfexport --split --client-id "..." --client-secret "..."
+abtfexport --split --client-id "..." --client-secret "..."
 ```
 
 **Important**: If you use Self-Managed Enterprise or an Open Source deployment, your URL will need to include `/api/public` at the end. For example, `https://airbyte.contoso.com/api/public`.
@@ -55,9 +55,9 @@ atfexport --split --client-id "..." --client-secret "..."
 
 You can configure the tool using:
 
-1. **Configuration file** (`~/.atfexport.yaml`):
+1. **Configuration file** (`~/.abtfexport.yaml`):
 ```yaml
-# Example configuration file for atfexport
+# Example configuration file for abtfexport
 api:
   url: "https://api.airbyte.com"  # Can also be set via AIRBYTE_API_URL environment variable
   client_id: "your_client_id"     # Can also be set via AIRBYTE_API_CLIENT_ID environment variable
@@ -71,9 +71,9 @@ export AIRBYTE_API_CLIENT_ID="your-airbyte-client-id"
 export AIRBYTE_API_CLIENT_SECRET="your-airbyte-client-secret"
 ```
 
-3. **Command-line flags** (see `atfexport --help` for all options):
+3. **Command-line flags** (see `abtfexport --help` for all options):
 ```bash
-atfexport --api-url https://api.airbyte.com --client-id "..." --client-secret "..."
+abtfexport --api-url https://api.airbyte.com --client-id "..." --client-secret "..."
 ```
 
 ### Getting an Airbyte Access Token

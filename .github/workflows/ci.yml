@@ -49,10 +49,10 @@ jobs:
           cache: true
 
       - name: Build binary
-        run: go build -o atfexport
+        run: go build -o abtfexport
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: atfexport
-          path: atfexport
+          name: abtfexport
+          path: abtfexport

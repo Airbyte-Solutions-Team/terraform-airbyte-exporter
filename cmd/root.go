@@ -12,9 +12,9 @@ var cfgFile string
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "atfexport",
+	Use:   "abtfexport",
 	Short: "Export Airbyte resources to Terraform configuration",
-	Long: `atfexport fetches sources, destinations, and connections from the Airbyte API
+	Long: `abtfexport fetches sources, destinations, and connections from the Airbyte API
 and converts them into Terraform configuration files (HCL format).
 
 This tool helps you migrate existing Airbyte configurations to Infrastructure as Code.`,
@@ -36,7 +36,7 @@ func init() {
 	cobra.OnInitialize(initConfig)
 
 	// Configuration and authentication flags
-	rootCmd.Flags().StringVar(&cfgFile, "config", "", "Config file location (default is $HOME/.atfexport.yaml)")
+	rootCmd.Flags().StringVar(&cfgFile, "config", "", "Config file location (default is $HOME/.abtfexport.yaml)")
 	rootCmd.Flags().String("api-url", "", "Base URL of the Airbyte API (default: https://api.airbyte.com)")
 	rootCmd.Flags().String("client-id", "", "Airbyte API client ID for authentication")
 	rootCmd.Flags().String("client-secret", "", "Airbyte API client secret for authentication")
@@ -82,10 +82,10 @@ func initConfig() {
 			os.Exit(1)
 		}
 
-		// Search config in home directory with name ".atfexport" (without extension).
+		// Search config in home directory with name ".abtfexport" (without extension).
 		viper.AddConfigPath(home)
 		viper.SetConfigType("yaml")
-		viper.SetConfigName(".atfexport")
+		viper.SetConfigName(".abtfexport")
 	}
 
 	viper.AutomaticEnv()          // read in environment variables that match
