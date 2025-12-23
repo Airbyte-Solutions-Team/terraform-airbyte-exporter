@@ -1,7 +1,6 @@
 package converter
 
 import (
-	"api_to_terraform/internal/airbyte"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Airbyte-Solutions-Team/terraform-airbyte-exporter/internal/airbyte"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
@@ -19,7 +19,7 @@ import (
 type TerraformConverter struct {
 	variables            map[string]string // Track variables for secrets
 	importComments       map[string]string // Track comments for import blocks (keyed by "type.name")
-	skipImports          bool              // Skip generating import blocks
+	migrate              bool              // Skip generating import blocks
 	sourceIDToName       map[string]string // Map source IDs to their resource names
 	destIDToName         map[string]string // Map destination IDs to their resource names
 	sourceDefinitionSeen map[string]bool   // Track seen source definitions to avoid duplicates
@@ -31,7 +31,7 @@ func NewTerraformConverter() *TerraformConverter {
 	return &TerraformConverter{
 		variables:            make(map[string]string),
 		importComments:       make(map[string]string),
-		skipImports:          false,
+		migrate:              false,
 		sourceIDToName:       make(map[string]string),
 		destIDToName:         make(map[string]string),
 		sourceDefinitionSeen: make(map[string]bool),
@@ -39,8 +39,8 @@ func NewTerraformConverter() *TerraformConverter {
 }
 
 // SetSkipImports sets whether to skip generating import blocks
-func (tc *TerraformConverter) SetSkipImports(skip bool) {
-	tc.skipImports = skip
+func (tc *TerraformConverter) SetMigrate(skip bool) {
+	tc.migrate = skip
 }
 
 // SetWorkspaceID sets the workspace ID for variable references
@@ -109,11 +109,8 @@ func (tc *TerraformConverter) validateResource(resource map[string]interface{}, 
 
 // getWorkspaceReference returns the proper workspace ID reference
 func (tc *TerraformConverter) getWorkspaceReference() string {
-	// Use the actual workspace ID value if available, otherwise use variable reference
-	if tc.workspaceID != "" {
-		return tc.workspaceID
-	}
-	// Fallback to variable reference
+	// Always return variable reference for Terraform configuration
+	// The actual workspace ID is only used for API calls and validation
 	return "var.workspace_id"
 }
 
@@ -575,7 +572,7 @@ func (tc *TerraformConverter) convertJSONToHCL(tfJSON map[string]interface{}) (s
 	rootBody := hclFile.Body()
 
 	// Process import blocks first (unless skipped)
-	if !tc.skipImports {
+	if !tc.migrate {
 		if imports, ok := tfJSON["import"].([]interface{}); ok {
 			for _, imp := range imports {
 				if impMap, ok := imp.(map[string]interface{}); ok {
@@ -1150,7 +1147,7 @@ func (tc *TerraformConverter) addSourceToJSON(resources map[string]interface{}, 
 	tc.sourceIDToName[source.SourceID] = resourceName
 
 	// Add import block (only if not skipping imports)
-	if !tc.skipImports {
+	if !tc.migrate {
 		importBlock := map[string]interface{}{
 			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
 			"id": source.SourceID,
@@ -1208,7 +1205,7 @@ func (tc *TerraformConverter) addDestinationToJSON(resources map[string]interfac
 	tc.destIDToName[dest.DestinationID] = resourceName
 
 	// Add import block (only if not skipping imports)
-	if !tc.skipImports {
+	if !tc.migrate {
 		importBlock := map[string]interface{}{
 			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
 			"id": dest.DestinationID,
@@ -1344,7 +1341,21 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 				"schedule_type": conn.Schedule.ScheduleType,
 			}
 			if conn.Schedule.CronExpression != "" {
-				resource["schedule"].(map[string]interface{})["cron_expression"] = conn.Schedule.CronExpression
+				// Convert Unix cron to Quartz format if needed
+				quartzCron, err := ConvertUnixCronToQuartz(conn.Schedule.CronExpression)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "⚠️  Warning: Failed to convert cron expression '%s' for connection '%s': %v\n",
+						conn.Schedule.CronExpression, conn.Name, err)
+					fmt.Fprintf(os.Stderr, "⚠️  Using original expression as-is\n")
+					resource["schedule"].(map[string]interface{})["cron_expression"] = conn.Schedule.CronExpression
+				} else {
+					if quartzCron != conn.Schedule.CronExpression {
+						fmt.Fprintf(os.Stderr, "⚠️  Info: Converted cron expression for connection '%s' from Unix to Quartz format\n", conn.Name)
+						fmt.Fprintf(os.Stderr, "    From: %s\n", conn.Schedule.CronExpression)
+						fmt.Fprintf(os.Stderr, "    To:   %s\n", quartzCron)
+					}
+					resource["schedule"].(map[string]interface{})["cron_expression"] = quartzCron
+				}
 			}
 			if conn.Schedule.BasicTiming != "" {
 				resource["schedule"].(map[string]interface{})["basic_timing"] = conn.Schedule.BasicTiming
@@ -1413,7 +1424,7 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 	typeMap[resourceName] = resource
 
 	// Add import block (only if not skipping imports)
-	if !tc.skipImports {
+	if !tc.migrate {
 		importBlock := map[string]interface{}{
 			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
 			"id": conn.ConnectionID,
@@ -1464,7 +1475,7 @@ func (tc *TerraformConverter) addDeclarativeSourceDefinitionToJSON(resources map
 	typeMap[resourceName] = resource
 
 	// Add import block (only if not skipping imports)
-	if !tc.skipImports {
+	if !tc.migrate {
 		importBlock := map[string]interface{}{
 			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
 			"id": def.ID,
