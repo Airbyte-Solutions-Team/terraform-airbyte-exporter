@@ -200,3 +200,21 @@ func (c *Client) GetDestinations(workspaceID string) ([]byte, error) {
 func (c *Client) GetConnections(workspaceID string) ([]byte, error) {
 	return c.Get("/v1/connections", &workspaceID)
 }
+
+// GetConnectionByID fetches a specific connection by ID
+func (c *Client) GetConnectionByID(connectionID string) ([]byte, error) {
+	endpoint := fmt.Sprintf("/v1/connections/%s", connectionID)
+	return c.Get(endpoint, nil)
+}
+
+// GetSourceByID fetches a specific source by ID
+func (c *Client) GetSourceByID(sourceID string) ([]byte, error) {
+	endpoint := fmt.Sprintf("/v1/sources/%s", sourceID)
+	return c.Get(endpoint, nil)
+}
+
+// GetDestinationByID fetches a specific destination by ID
+func (c *Client) GetDestinationByID(destinationID string) ([]byte, error) {
+	endpoint := fmt.Sprintf("/v1/destinations/%s", destinationID)
+	return c.Get(endpoint, nil)
+}

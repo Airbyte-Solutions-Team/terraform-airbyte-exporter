@@ -1,4 +1,4 @@
-module api_to_terraform
+module github.com/Airbyte-Solutions-Team/terraform-airbyte-exporter
 
 go 1.24.0
 

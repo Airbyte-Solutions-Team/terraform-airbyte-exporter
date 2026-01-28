@@ -4,8 +4,11 @@
 .env
 
 # Binaries
+abtfexport
+abtfexport.exe
 api-to-terraform
 api-to-terraform.exe
+dist/
 
 # terraform
 *.tf

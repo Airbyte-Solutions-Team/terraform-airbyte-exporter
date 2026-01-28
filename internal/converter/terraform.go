@@ -1,15 +1,13 @@
 package converter
 
 import (
-	"api_to_terraform/internal/airbyte"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"regexp"
 	"strings"
-	"time"
 
+	"github.com/Airbyte-Solutions-Team/terraform-airbyte-exporter/internal/airbyte"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
@@ -19,7 +17,7 @@ import (
 type TerraformConverter struct {
 	variables            map[string]string // Track variables for secrets
 	importComments       map[string]string // Track comments for import blocks (keyed by "type.name")
-	skipImports          bool              // Skip generating import blocks
+	migrate              bool              // Skip generating import blocks
 	sourceIDToName       map[string]string // Map source IDs to their resource names
 	destIDToName         map[string]string // Map destination IDs to their resource names
 	sourceDefinitionSeen map[string]bool   // Track seen source definitions to avoid duplicates
@@ -31,7 +29,7 @@ func NewTerraformConverter() *TerraformConverter {
 	return &TerraformConverter{
 		variables:            make(map[string]string),
 		importComments:       make(map[string]string),
-		skipImports:          false,
+		migrate:              false,
 		sourceIDToName:       make(map[string]string),
 		destIDToName:         make(map[string]string),
 		sourceDefinitionSeen: make(map[string]bool),
@@ -39,8 +37,8 @@ func NewTerraformConverter() *TerraformConverter {
 }
 
 // SetSkipImports sets whether to skip generating import blocks
-func (tc *TerraformConverter) SetSkipImports(skip bool) {
-	tc.skipImports = skip
+func (tc *TerraformConverter) SetMigrate(skip bool) {
+	tc.migrate = skip
 }
 
 // SetWorkspaceID sets the workspace ID for variable references
@@ -109,44 +107,9 @@ func (tc *TerraformConverter) validateResource(resource map[string]interface{}, 
 
 // getWorkspaceReference returns the proper workspace ID reference
 func (tc *TerraformConverter) getWorkspaceReference() string {
-	// Use the actual workspace ID value if available, otherwise use variable reference
-	if tc.workspaceID != "" {
-		return tc.workspaceID
-	}
-	// Fallback to variable reference
+	// Always return variable reference for Terraform configuration
+	// The actual workspace ID is only used for API calls and validation
 	return "var.workspace_id"
-}
-
-// isComplexConnection determines if a connection requires manual configuration
-func (tc *TerraformConverter) isComplexConnection(sourceID, destinationID string) bool {
-	// Check if source or destination names suggest complexity
-	sourceName := ""
-	destName := ""
-
-	if name, ok := tc.sourceIDToName[sourceID]; ok {
-		sourceName = name
-	}
-	if name, ok := tc.destIDToName[destinationID]; ok {
-		destName = name
-	}
-
-	// Complex connectors that typically need manual configuration
-	complexSources := []string{"google_sheets", "salesforce", "hubspot", "stripe", "shopify"}
-	complexDestinations := []string{"hubspot", "salesforce", "stripe", "shopify", "bigquery", "snowflake"}
-
-	for _, complex := range complexSources {
-		if strings.Contains(strings.ToLower(sourceName), complex) {
-			return true
-		}
-	}
-
-	for _, complex := range complexDestinations {
-		if strings.Contains(strings.ToLower(destName), complex) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // Convert converts JSON data to Terraform HCL format
@@ -164,10 +127,6 @@ func (tc *TerraformConverter) Convert(jsonData []byte, workspaceId string) (stri
 	if err == nil {
 		return tc.convertJSONToHCL(tfJSON)
 	}
-
-	println("Warning: Unrecognized Airbyte response format")
-	println(string(jsonData))
-	println(err.Error())
 	return "", fmt.Errorf("failed to parse Airbyte response")
 }
 
@@ -256,64 +215,21 @@ type GitHubReleaseResponse struct {
 	TagName string `json:"tag_name"`
 }
 
-// GetLatestAirbyteProviderVersion fetches the latest version of the Airbyte provider from GitHub
-func GetLatestAirbyteProviderVersion() (string, error) {
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-
-	url := "https://api.github.com/repos/airbytehq/terraform-provider-airbyte/releases/latest"
-
-	resp, err := client.Get(url)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch latest release: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
-	}
-
-	var releaseResp GitHubReleaseResponse
-	if err := json.NewDecoder(resp.Body).Decode(&releaseResp); err != nil {
-		return "", fmt.Errorf("failed to decode GitHub response: %w", err)
-	}
-
-	if releaseResp.TagName == "" {
-		return "", fmt.Errorf("no tag name found in GitHub response")
-	}
-
-	// Remove 'v' prefix if present
-	latestVersion := strings.TrimPrefix(releaseResp.TagName, "v")
-
-	return latestVersion, nil
-}
-
 // GetProvidersContent returns the content for a providers.tf file
 func (tc *TerraformConverter) GetProvidersContent(providerVersion string, skipVersionCheck bool) string {
 	var builder strings.Builder
 
 	var latestVersion string
-	var err error
 
 	if providerVersion != "" {
 		// Use the specified version
 		latestVersion = providerVersion
 		fmt.Fprintf(os.Stderr, "Using specified Airbyte provider version: %s\n", latestVersion)
-	} else if skipVersionCheck {
+	} else if skipVersionCheck || providerVersion == "" {
 		// Use fallback version without checking
 		latestVersion = "0.13.0"
-		fmt.Fprintf(os.Stderr, "Using fallback Airbyte provider version: %s\n", latestVersion)
 	} else {
-		// Try to get the latest version, fallback to a known good version if it fails
-		latestVersion, err = GetLatestAirbyteProviderVersion()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to fetch latest Airbyte provider version: %v\n", err)
-			fmt.Fprintf(os.Stderr, "Using fallback version 0.13.0\n")
-			latestVersion = "0.13.0" // Fallback to a known recent version
-		} else {
-			fmt.Fprintf(os.Stderr, "Using latest Airbyte provider version: %s\n", latestVersion)
-		}
+		latestVersion = "0.13.0" // Fallback to a known recent version
 	}
 
 	builder.WriteString("terraform {\n")
@@ -354,10 +270,6 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 	resources := tfJSON["resource"].(map[string]interface{})
 	imports := tfJSON["import"].([]interface{})
 
-	if workspaceID != "" {
-		fmt.Fprintf(os.Stderr, "Using workspace ID here: %s\n", workspaceID)
-	}
-
 	// TODO: Rework this to avoid code duplication - maybe use reflection or a common interface
 	// Try parsing as ConnectionResponse FIRST (most specific)
 	var connResp airbyte.ConnectionResponse
@@ -371,7 +283,7 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 		}
 		tfJSON["import"] = imports
 		return nil
-	} else {
+	} else if err != nil {
 		fmt.Fprintf(os.Stderr, "ConnectionResponse unmarshal error: %v\n", err)
 	}
 
@@ -387,7 +299,7 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 		}
 		tfJSON["import"] = imports
 		return nil
-	} else {
+	} else if err != nil {
 		fmt.Fprintf(os.Stderr, "SourceResponse unmarshal error: %v\n", err)
 	}
 
@@ -403,7 +315,7 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 		}
 		tfJSON["import"] = imports
 		return nil
-	} else {
+	} else if err != nil {
 		fmt.Fprintf(os.Stderr, "DestinationResponse unmarshal error: %v\n", err)
 	}
 
@@ -575,7 +487,7 @@ func (tc *TerraformConverter) convertJSONToHCL(tfJSON map[string]interface{}) (s
 	rootBody := hclFile.Body()
 
 	// Process import blocks first (unless skipped)
-	if !tc.skipImports {
+	if !tc.migrate {
 		if imports, ok := tfJSON["import"].([]interface{}); ok {
 			for _, imp := range imports {
 				if impMap, ok := imp.(map[string]interface{}); ok {
@@ -1150,7 +1062,7 @@ func (tc *TerraformConverter) addSourceToJSON(resources map[string]interface{}, 
 	tc.sourceIDToName[source.SourceID] = resourceName
 
 	// Add import block (only if not skipping imports)
-	if !tc.skipImports {
+	if !tc.migrate {
 		importBlock := map[string]interface{}{
 			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
 			"id": source.SourceID,
@@ -1208,7 +1120,7 @@ func (tc *TerraformConverter) addDestinationToJSON(resources map[string]interfac
 	tc.destIDToName[dest.DestinationID] = resourceName
 
 	// Add import block (only if not skipping imports)
-	if !tc.skipImports {
+	if !tc.migrate {
 		importBlock := map[string]interface{}{
 			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
 			"id": dest.DestinationID,
@@ -1265,13 +1177,6 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 	resourceType := "airbyte_connection"
 	resourceName := tc.sanitizeName(fmt.Sprintf("%s_%s", conn.Name, conn.ConnectionID))
 
-	// Check if this is a complex connection that might need manual configuration
-	if tc.isComplexConnection(conn.SourceID, conn.DestinationID) {
-		fmt.Fprintf(os.Stderr, "⚠️  Warning: Complex connection detected: %s\n", conn.Name)
-		fmt.Fprintf(os.Stderr, "⚠️  This connection may require manual configuration in Airbyte UI due to schema discovery and field mapping requirements.\n")
-		fmt.Fprintf(os.Stderr, "⚠️  Consider creating this connection manually if Terraform deployment fails.\n\n")
-	}
-
 	if _, ok := resources[resourceType]; !ok {
 		resources[resourceType] = make(map[string]interface{})
 	}
@@ -1322,17 +1227,17 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 			cronExpr, err := ParseBasicTimingToCron(conn.Schedule.BasicTiming, refTimestamp)
 			if err != nil {
 				// If conversion fails, use manual schedule as fallback
-				fmt.Fprintf(os.Stderr, "⚠️  Warning: Failed to convert BasicTiming '%s' to cron for connection '%s': %v\n",
+				fmt.Fprintf(os.Stderr, "  Warning: Failed to convert BasicTiming '%s' to cron for connection '%s': %v\n",
 					conn.Schedule.BasicTiming, conn.Name, err)
-				fmt.Fprintf(os.Stderr, "⚠️  Note: Using manual schedule as fallback. Please configure schedule manually in Airbyte UI.\n")
+				fmt.Fprintf(os.Stderr, "  Note: Using manual schedule as fallback. Please configure schedule manually in Airbyte UI.\n")
 				resource["schedule"] = map[string]interface{}{
 					"schedule_type": "manual",
 				}
 			} else {
 				// Successfully converted to cron, use "cron" schedule type
-				fmt.Fprintf(os.Stderr, "⚠️  Info: Converted connection '%s' from basic schedule '%s' to cron: %s\n",
+				fmt.Fprintf(os.Stderr, "  Info: Converted connection '%s' from basic schedule '%s' to cron: %s\n",
 					conn.Name, conn.Schedule.BasicTiming, cronExpr)
-				fmt.Fprintf(os.Stderr, "⚠️  Note: Basic schedule types are not supported in Terraform. Automatically converted to cron.\n")
+				fmt.Fprintf(os.Stderr, "  Note: Basic schedule types are not supported in Terraform. Automatically converted to cron.\n")
 				resource["schedule"] = map[string]interface{}{
 					"schedule_type":   "cron",
 					"cron_expression": cronExpr,
@@ -1344,7 +1249,21 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 				"schedule_type": conn.Schedule.ScheduleType,
 			}
 			if conn.Schedule.CronExpression != "" {
-				resource["schedule"].(map[string]interface{})["cron_expression"] = conn.Schedule.CronExpression
+				// Convert Unix cron to Quartz format if needed
+				quartzCron, err := ConvertUnixCronToQuartz(conn.Schedule.CronExpression)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  Warning: Failed to convert cron expression '%s' for connection '%s': %v\n",
+						conn.Schedule.CronExpression, conn.Name, err)
+					fmt.Fprintf(os.Stderr, "  Using original expression as-is\n")
+					resource["schedule"].(map[string]interface{})["cron_expression"] = conn.Schedule.CronExpression
+				} else {
+					if quartzCron != conn.Schedule.CronExpression {
+						fmt.Fprintf(os.Stderr, "  Info: Converted cron expression for connection '%s' from Unix to Quartz format\n", conn.Name)
+						fmt.Fprintf(os.Stderr, "    From: %s\n", conn.Schedule.CronExpression)
+						fmt.Fprintf(os.Stderr, "    To:   %s\n", quartzCron)
+					}
+					resource["schedule"].(map[string]interface{})["cron_expression"] = quartzCron
+				}
 			}
 			if conn.Schedule.BasicTiming != "" {
 				resource["schedule"].(map[string]interface{})["basic_timing"] = conn.Schedule.BasicTiming
@@ -1413,7 +1332,7 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 	typeMap[resourceName] = resource
 
 	// Add import block (only if not skipping imports)
-	if !tc.skipImports {
+	if !tc.migrate {
 		importBlock := map[string]interface{}{
 			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
 			"id": conn.ConnectionID,
@@ -1439,6 +1358,7 @@ func (tc *TerraformConverter) addDeclarativeSourceDefinitionToJSON(resources map
 		fmt.Fprintf(os.Stderr, "Warning: Skipping declarative source definition '%s' because workspace ID is missing\n", def.Name)
 		return
 	}
+
 	typeMap := resources[resourceType].(map[string]interface{})
 
 	// Marshal the manifest to a JSON string
@@ -1449,9 +1369,9 @@ func (tc *TerraformConverter) addDeclarativeSourceDefinitionToJSON(resources map
 	}
 
 	if tc.sourceDefinitionSeen[def.ID] {
-		fmt.Fprintf(os.Stderr, "Warning: Skipping duplicate declarative source definition '%s' with ID '%s'\n", def.Name, def.ID)
 		return
 	}
+
 	tc.sourceDefinitionSeen[def.ID] = true
 
 	// Create the resource
@@ -1464,7 +1384,7 @@ func (tc *TerraformConverter) addDeclarativeSourceDefinitionToJSON(resources map
 	typeMap[resourceName] = resource
 
 	// Add import block (only if not skipping imports)
-	if !tc.skipImports {
+	if !tc.migrate {
 		importBlock := map[string]interface{}{
 			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
 			"id": def.ID,
