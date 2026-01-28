@@ -67,7 +67,6 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 				for _, ws := range workspaceResp.Data {
 					workspaceIDs = append(workspaceIDs, ws.WorkspaceID)
 				}
-				fmt.Fprintf(os.Stderr, "Found %d workspace(s) for declarative source definitions export\n", len(workspaceIDs))
 			} else {
 				fmt.Fprintf(os.Stderr, "Warning: Failed to parse workspace response: %v\n", err)
 				fmt.Fprintf(os.Stderr, "Note: Declarative source definitions will be skipped\n")
@@ -92,11 +91,8 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	// Reset variables at the start
 	conv.ResetVariables()
 
-	if workspaceID != "" {
-		fmt.Fprintf(os.Stderr, "Using workspace ID: %s\n", workspaceID)
-	}
 	for _, resource := range resources {
-		fmt.Fprintf(os.Stderr, "Fetching %s from %s%s...\n", resource.name, baseURL, resource.endpoint)
+		fmt.Fprintf(os.Stderr, "Fetching %s...\n", resource.name)
 
 		data, err := client.Get(resource.endpoint, &workspaceID)
 		if err != nil {
@@ -128,7 +124,6 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Fetching declarative source definitions...\n")
 		for _, wsID := range workspaceIDs {
 			endpoint := fmt.Sprintf("/v1/workspaces/%s/definitions/declarative_sources", wsID)
-			fmt.Fprintf(os.Stderr, "Fetching declarative source definitions for workspace %s from %s%s...\n", wsID, baseURL, endpoint)
 
 			data, err := client.Get(endpoint, nil)
 			if err != nil {
@@ -149,8 +144,6 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 					declarativeDefsTerraform += "\n\n"
 				}
 				declarativeDefsTerraform += terraform
-			} else {
-				fmt.Fprintf(os.Stderr, "No declarative source definitions found for workspace %s\n", wsID)
 			}
 		}
 
@@ -379,7 +372,6 @@ func exportSingleConnection(client *api.Client, conv *converter.TerraformConvert
 				// Find the definition that matches this source's definition ID
 				for _, def := range declResp.DeclarativeSourceDefinitions {
 					if def.ID == source.SourceDefinitionID {
-						fmt.Fprintf(os.Stderr, "Found matching declarative source definition: %s\n", def.Name)
 						// Convert to Terraform
 						singleDefResp := airbyte.DeclarativeSourceDefinitionResponse{
 							DeclarativeSourceDefinitions: []airbyte.DeclarativeSourceDefinition{def},
@@ -505,7 +497,7 @@ func exportSingleConnection(client *api.Client, conv *converter.TerraformConvert
 
 func printSuccessMessage(outputDir string, splitFiles bool, hasVariables bool, hasTfvars bool, migrate bool, hasDeclarativeDefs bool, separateVariables bool, skipProviders bool) {
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "✅ Export completed successfully!")
+	fmt.Fprintln(os.Stderr, "Export completed successfully!")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Generated files:")
 
@@ -534,10 +526,10 @@ func printSuccessMessage(outputDir string, splitFiles bool, hasVariables bool, h
 	}
 
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "⚠️  IMPORTANT: Next steps")
+	fmt.Fprintln(os.Stderr, "IMPORTANT: Next steps")
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "  1. Review and modify the generated Terraform files as required by your organization")
-	fmt.Fprintln(os.Stderr, "  2. Update security and compliance settings to match your standards")
+	fmt.Fprintln(os.Stderr, "  1. Review and modify the generated Terraform files")
+	fmt.Fprintln(os.Stderr, "  2. Update security and compliance settings as needed")
 	fmt.Fprintln(os.Stderr, "  3. Verify all resource configurations before applying")
 
 	if hasTfvars {
@@ -556,7 +548,7 @@ func printSuccessMessage(outputDir string, splitFiles bool, hasVariables bool, h
 
 	if !migrate {
 		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "💡 To import existing resources into Terraform state, run:")
+		fmt.Fprintln(os.Stderr, "To import existing resources into Terraform state, run:")
 		fmt.Fprintf(os.Stderr, "     cd %s && terraform init && terraform plan -generate-config-out=generated.tf\n", outputDir)
 	}
 

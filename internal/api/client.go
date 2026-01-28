@@ -188,7 +188,6 @@ func (c *Client) GetWorkspaces() ([]byte, error) {
 
 // GetSources fetches sources for a workspace
 func (c *Client) GetSources(workspaceID string) ([]byte, error) {
-	println("Fetching sources for workspace ID:", workspaceID)
 	return c.Get("/v1/sources", &workspaceID)
 }
 
