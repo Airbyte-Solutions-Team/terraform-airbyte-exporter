@@ -18,6 +18,8 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	baseURL := viper.GetString("api.url")
 	clientID := viper.GetString("api.client_id")
 	clientSecret := viper.GetString("api.client_secret")
+	username := viper.GetString("api.username")
+	password := viper.GetString("api.password")
 	outputDir := viper.GetString("airbyte.output-dir")
 	splitFiles := viper.GetBool("airbyte.split")
 	migrate := viper.GetBool("airbyte.migrate")
@@ -31,9 +33,13 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create API client
-	client := api.NewClient(baseURL, clientID, clientSecret)
+	client, err := api.NewClient(baseURL, clientID, clientSecret, username, password)
+	if err != nil {
+		return fmt.Errorf("failed to create API client: %w", err)
+	}
 	conv := converter.NewTerraformConverter()
 	conv.SetMigrate(migrate)
+	conv.SetServerURL(baseURL)
 
 	// Check if connection-id is specified for targeted export
 	connectionID := viper.GetString("airbyte.connection-id")

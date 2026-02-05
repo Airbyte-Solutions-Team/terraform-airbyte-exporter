@@ -3,6 +3,7 @@ package converter
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -22,7 +23,10 @@ type TerraformConverter struct {
 	destIDToName         map[string]string // Map destination IDs to their resource names
 	sourceDefinitionSeen map[string]bool   // Track seen source definitions to avoid duplicates
 	workspaceID          string            // Store workspace ID for variable references
+	serverURL            string            // Store server URL to determine if it's the default
 }
+
+const defaultServerURL = "https://api.airbyte.com"
 
 // NewTerraformConverter creates a new Terraform converter
 func NewTerraformConverter() *TerraformConverter {
@@ -44,6 +48,58 @@ func (tc *TerraformConverter) SetMigrate(skip bool) {
 // SetWorkspaceID sets the workspace ID for variable references
 func (tc *TerraformConverter) SetWorkspaceID(workspaceID string) {
 	tc.workspaceID = workspaceID
+}
+
+// SetServerURL sets the server URL to determine if it's the default
+func (tc *TerraformConverter) SetServerURL(serverURL string) {
+	tc.serverURL = serverURL
+}
+
+// isDefaultServerURL checks if the server URL is the default
+func (tc *TerraformConverter) isDefaultServerURL() bool {
+	return tc.serverURL == "" || tc.serverURL == defaultServerURL
+}
+
+// shouldIncludeServerURL determines if server_url should be included in Terraform config
+// Returns true if:
+// - Using a custom (non-default) URL, OR
+// - Using default URL but NOT in migrate mode (i.e., generating import blocks for existing resources)
+func (tc *TerraformConverter) shouldIncludeServerURL() bool {
+	// Always include if using a custom URL
+	if !tc.isDefaultServerURL() {
+		return true
+	}
+
+	// If using default URL, only skip if we're in migrate mode (skipping imports)
+	// If NOT in migrate mode (generating imports), we need server_url for resource migration
+	return !tc.migrate
+}
+
+// getServerURLWithV1 returns the server URL with /v1 path appended if not present
+func (tc *TerraformConverter) getServerURLWithV1() (string, error) {
+	baseURL := tc.serverURL
+	if baseURL == "" {
+		baseURL = defaultServerURL
+	}
+
+	// Parse to check if it already has /v1 in the path
+	parsedURL, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid server URL: %w", err)
+	}
+
+	// Check if path already ends with /v1
+	if strings.HasSuffix(parsedURL.Path, "/v1") {
+		return baseURL, nil
+	}
+
+	// Use url.JoinPath to safely append /v1
+	fullURL, err := url.JoinPath(baseURL, "v1")
+	if err != nil {
+		return "", fmt.Errorf("failed to join URL path: %w", err)
+	}
+
+	return fullURL, nil
 }
 
 // getSourceReference returns the proper reference for a source ID
@@ -143,21 +199,36 @@ func (tc *TerraformConverter) GetVariablesHCL() string {
 	hclFile := hclwrite.NewEmptyFile()
 	rootBody := hclFile.Body()
 
-	// Add basic Airbyte variables first
-	basicVariables := map[string]string{
-		"server_url":    "Airbyte server URL",
-		"client_id":     "Airbyte API client ID",
-		"client_secret": "Airbyte API client secret",
-		"workspace_id":  "Airbyte workspace ID",
+	// Add basic Airbyte variables first (in order)
+	basicVariables := []struct {
+		name        string
+		description string
+		sensitive   bool
+	}{
+		{"server_url", "Airbyte server URL", false},
+		{"client_id", "Airbyte API client ID (OAuth2)", true},
+		{"client_secret", "Airbyte API client secret (OAuth2)", true},
+		{"username", "Username for basic authentication", false},
+		{"password", "Password for basic authentication", true},
+		{"workspace_id", "Airbyte workspace ID", false},
 	}
 
-	for varName, description := range basicVariables {
-		varBlock := rootBody.AppendNewBlock("variable", []string{varName})
+	for _, v := range basicVariables {
+		// Skip server_url based on URL and migrate mode
+		if v.name == "server_url" && !tc.shouldIncludeServerURL() {
+			continue
+		}
+
+		varBlock := rootBody.AppendNewBlock("variable", []string{v.name})
 		varBody := varBlock.Body()
 		varBody.SetAttributeRaw("type", hclwrite.Tokens{tc.tokenIdent("string")})
-		varBody.SetAttributeValue("description", cty.StringVal(description))
-		if varName == "client_id" || varName == "client_secret" {
+		varBody.SetAttributeValue("description", cty.StringVal(v.description))
+		if v.sensitive {
 			varBody.SetAttributeValue("sensitive", cty.BoolVal(true))
+		}
+		// Make username and password optional with default empty string
+		if v.name == "username" || v.name == "password" {
+			varBody.SetAttributeValue("default", cty.StringVal(""))
 		}
 		rootBody.AppendNewline()
 	}
@@ -188,10 +259,22 @@ func (tc *TerraformConverter) GetTfvarsContent() string {
 	builder.WriteString("# This file should be kept secure and not committed to version control\n\n")
 
 	// Add Airbyte API credentials section
-	builder.WriteString("# Destination Airbyte API credentials\n")
-	builder.WriteString("server_url    = \"YOUR_AIRBYTE_SERVER_URL\"\n")
+	builder.WriteString("# Airbyte API credentials\n")
+
+	// Include server_url based on URL and migrate mode
+	if tc.shouldIncludeServerURL() {
+		builder.WriteString("server_url    = \"YOUR_AIRBYTE_SERVER_URL\"\n\n")
+	}
+
+	builder.WriteString("# OAuth2 authentication (for Airbyte Cloud)\n")
 	builder.WriteString("client_id     = \"YOUR_AIRBYTE_CLIENT_ID\"\n")
-	builder.WriteString("client_secret = \"YOUR_AIRBYTE_CLIENT_SECRET\"\n")
+	builder.WriteString("client_secret = \"YOUR_AIRBYTE_CLIENT_SECRET\"\n\n")
+
+	builder.WriteString("# Basic authentication (for self-hosted/legacy Airbyte)\n")
+	builder.WriteString("# Uncomment and use these instead of client_id/client_secret if using basic auth\n")
+	builder.WriteString("# username = \"YOUR_USERNAME\"\n")
+	builder.WriteString("# password = \"YOUR_PASSWORD\"\n\n")
+
 	builder.WriteString("workspace_id  = \"YOUR_AIRBYTE_WORKSPACE_ID\"\n\n")
 
 	// Add other variables if they exist
@@ -241,9 +324,25 @@ func (tc *TerraformConverter) GetProvidersContent(providerVersion string, skipVe
 	builder.WriteString("  }\n")
 	builder.WriteString("}\n\n")
 	builder.WriteString("provider \"airbyte\" {\n")
-	builder.WriteString("  server_url   = var.server_url\n")
-	builder.WriteString("  client_id    = var.client_id\n")
-	builder.WriteString("  client_secret = var.client_secret\n")
+
+	// Include server_url based on URL and migrate mode
+	if tc.shouldIncludeServerURL() {
+		serverURLWithV1, err := tc.getServerURLWithV1()
+		if err != nil {
+			// Fallback to the original URL if there's an error
+			fmt.Fprintf(os.Stderr, "Warning: Failed to parse server URL: %v\n", err)
+			builder.WriteString(fmt.Sprintf("  server_url = \"%s\"\n\n", tc.serverURL))
+		} else {
+			builder.WriteString(fmt.Sprintf("  server_url = \"%s\"\n\n", serverURLWithV1))
+		}
+	}
+
+	builder.WriteString("  # OAuth2 authentication (comment out if using basic auth)\n")
+	builder.WriteString("  client_id     = var.client_id\n")
+	builder.WriteString("  client_secret = var.client_secret\n\n")
+	builder.WriteString("  # Basic authentication (uncomment if using basic auth)\n")
+	builder.WriteString("  # username = var.username\n")
+	builder.WriteString("  # password = var.password\n")
 	builder.WriteString("}\n")
 	return builder.String()
 }
