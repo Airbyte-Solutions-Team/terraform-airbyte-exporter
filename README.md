@@ -100,17 +100,11 @@ Export connection states to a JSON file:
 ```bash
 # Export all connections in a workspace
 abtfexport state export \
-  --api-url https://old-instance.airbyte.com \
-  --client-id old_client_id \
-  --client-secret old_secret \
   --workspace ws_old_123 \
   --output connection_states.json
 
 # Or export a single connection
 abtfexport state export \
-  --api-url https://old-instance.airbyte.com \
-  --client-id old_client_id \
-  --client-secret old_secret \
   --connection-id conn_456 \
   --output connection_states.json
 ```
@@ -121,9 +115,6 @@ Generate Terraform configuration that prepares connections for state migration:
 
 ```bash
 abtfexport \
-  --api-url https://old-instance.airbyte.com \
-  --client-id old_client_id \
-  --client-secret old_secret \
   --workspace ws_old_123 \
   --migrate-connection-state \
   --output-dir ./terraform-migration
@@ -209,10 +200,6 @@ Create a mapping file that links old connection IDs to new ones:
 ```bash
 abtfexport state map \
   --states connection_states.json \
-  --api-url https://new-instance.airbyte.com \
-  --client-id new_client_id \
-  --client-secret new_secret \
-  --workspace ws_new_456 \
   --output connection_mapping.json
 ```
 
