@@ -35,11 +35,11 @@ func Execute() error {
 func init() {
 	cobra.OnInitialize(initConfig)
 
-	// Configuration and authentication flags
-	rootCmd.Flags().StringVar(&cfgFile, "config", "", "Config file location (default is $HOME/.abtfexport.yaml)")
-	rootCmd.Flags().String("api-url", "", "Base URL of the Airbyte API (default: https://api.airbyte.com)")
-	rootCmd.Flags().String("client-id", "", "Airbyte API client ID for authentication")
-	rootCmd.Flags().String("client-secret", "", "Airbyte API client secret for authentication")
+	// Configuration and authentication flags (persistent = available to all subcommands)
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "Config file location (default is $HOME/.abtfexport.yaml)")
+	rootCmd.PersistentFlags().String("api-url", "", "Base URL of the Airbyte API (default: https://api.airbyte.com)")
+	rootCmd.PersistentFlags().String("client-id", "", "Airbyte API client ID for authentication")
+	rootCmd.PersistentFlags().String("client-secret", "", "Airbyte API client secret for authentication")
 	rootCmd.Flags().String("workspace", "", "Airbyte workspace ID to filter resources")
 
 	// Export behavior flags
@@ -52,11 +52,12 @@ func init() {
 	rootCmd.Flags().Bool("include-variables", true, "Include variables.tf content inside airbyte.tf (single file mode only)")
 	rootCmd.Flags().Bool("separate-variables", false, "Generate separate variables.tf file instead of including in airbyte.tf")
 	rootCmd.Flags().Bool("skip-providers", false, "Skip generating providers.tf file")
+	rootCmd.Flags().Bool("migrate-connection-state", false, "Prepare connections for state migration (disables connections, sets manual sync, uses old IDs as names, and comments out connection blocks)")
 
 	// Bind flags to viper
-	viper.BindPFlag("api.url", rootCmd.Flags().Lookup("api-url"))
-	viper.BindPFlag("api.client_id", rootCmd.Flags().Lookup("client-id"))
-	viper.BindPFlag("api.client_secret", rootCmd.Flags().Lookup("client-secret"))
+	viper.BindPFlag("api.url", rootCmd.PersistentFlags().Lookup("api-url"))
+	viper.BindPFlag("api.client_id", rootCmd.PersistentFlags().Lookup("client-id"))
+	viper.BindPFlag("api.client_secret", rootCmd.PersistentFlags().Lookup("client-secret"))
 	viper.BindPFlag("api.workspace", rootCmd.Flags().Lookup("workspace"))
 	viper.BindPFlag("airbyte.output-dir", rootCmd.Flags().Lookup("output-dir"))
 	viper.BindPFlag("airbyte.split", rootCmd.Flags().Lookup("split"))
@@ -67,6 +68,7 @@ func init() {
 	viper.BindPFlag("airbyte.include-variables", rootCmd.Flags().Lookup("include-variables"))
 	viper.BindPFlag("airbyte.separate-variables", rootCmd.Flags().Lookup("separate-variables"))
 	viper.BindPFlag("airbyte.skip-providers", rootCmd.Flags().Lookup("skip-providers"))
+	viper.BindPFlag("airbyte.migrate-connection-state", rootCmd.Flags().Lookup("migrate-connection-state"))
 }
 
 // initConfig reads in config file and ENV variables if set.

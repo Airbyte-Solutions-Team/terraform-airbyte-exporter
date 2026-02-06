@@ -12,6 +12,7 @@ A CLI tool (`abtfexport`) that fetches resources from the Airbyte API and conver
 - Fetch Airbyte sources, destinations, and connections
 - Support for Airbyte API Bearer token authentication
 - Configuration via file, environment variables, or command-line flags
+- **Connection state migration** between Airbyte instances
 
 ## Installation
 
@@ -86,6 +87,189 @@ To use this tool, you'll need an Airbyte client ID and secret:
 
 See the [Airbyte API documentation](https://docs.airbyte.com/using-airbyte/configuring-api-access) for more details.
 
+## Connection State Migration
+
+This tool supports migrating connection states between Airbyte instances. This is useful when moving from one Airbyte deployment to another while preserving sync progress.
+
+### Migration Workflow
+
+**1. Export State from Old Instance**
+
+Export connection states to a JSON file:
+
+```bash
+# Export all connections in a workspace
+abtfexport state export \
+  --api-url https://old-instance.airbyte.com \
+  --client-id old_client_id \
+  --client-secret old_secret \
+  --workspace ws_old_123 \
+  --output connection_states.json
+
+# Or export a single connection
+abtfexport state export \
+  --api-url https://old-instance.airbyte.com \
+  --client-id old_client_id \
+  --client-secret old_secret \
+  --connection-id conn_456 \
+  --output connection_states.json
+```
+
+**2. Generate Terraform with State Migration Mode**
+
+Generate Terraform configuration that prepares connections for state migration:
+
+```bash
+abtfexport \
+  --api-url https://old-instance.airbyte.com \
+  --client-id old_client_id \
+  --client-secret old_secret \
+  --workspace ws_old_123 \
+  --migrate-connection-state \
+  --output-dir ./terraform-migration
+```
+
+Migration mode features:
+- Uses old connection IDs as temporary connection names (for reliable matching)
+- Sets all connections to `inactive` status (prevents premature syncing)
+- Sets all connections to manual sync (schedules preserved in state file)
+- **Comments out connection blocks** with clear instructions for uncommenting
+
+The generated Terraform will have sources and destinations uncommented, but connections commented out with instructions:
+
+```hcl
+# Sources and destinations (uncommented - will be created)
+resource "airbyte_source_custom" "postgres_src" {
+  name          = "postgres-source"
+  workspace_id  = var.workspace_id
+  definition_id = "..."
+  configuration = jsonencode({...})
+}
+
+# ============================================================================
+# MIGRATION: Connection Configuration Required
+# ============================================================================
+# The connections below have been commented out because they require the
+# sources and destinations above to be fully configured before they can be
+# created successfully.
+#
+# STEPS TO ENABLE CONNECTIONS:
+# 1. Apply this Terraform configuration: terraform apply
+#    (This creates sources and destinations only)
+# 2. Configure the sources and destinations in the Airbyte UI
+#    (Add credentials, test connections, etc.)
+# 3. Uncomment the connection resources below
+# 4. Apply again: terraform apply
+#    (This creates the connections)
+# ============================================================================
+
+# Original name: "postgres-to-snowflake"
+# resource "airbyte_connection" "postgres_to_snowflake_3b79f0ab" {
+#   name                                    = "3b79f0ab-f988-4d86-83d4-21488c2cef60"
+#   source_id                               = airbyte_source_custom.postgres_src.source_id
+#   destination_id                          = airbyte_destination_custom.snowflake_dest.destination_id
+#   status                                  = "inactive"
+#   ...
+# }
+```
+
+**3. Apply Terraform to New Instance (Sources/Destinations First)**
+
+Update `providers.tf` with new instance credentials, then apply:
+
+```bash
+cd terraform-migration
+# Edit providers.tf with new instance credentials
+# Edit terraform.tfvars with actual values
+terraform init
+terraform apply  # This creates only sources and destinations
+```
+
+**4. Configure Sources and Destinations**
+
+In the Airbyte UI of your new instance:
+- Add credentials to sources
+- Add credentials to destinations
+- Test connections to ensure they work
+
+**5. Uncomment Connections and Apply Again**
+
+Edit the generated Terraform files to uncomment the connection blocks:
+
+```bash
+# Uncomment the connection resources in the .tf files
+# Then apply again
+terraform apply  # This creates the connections
+```
+
+**6. Generate ID Mapping**
+
+Create a mapping file that links old connection IDs to new ones:
+
+```bash
+abtfexport state map \
+  --states connection_states.json \
+  --api-url https://new-instance.airbyte.com \
+  --client-id new_client_id \
+  --client-secret new_secret \
+  --workspace ws_new_456 \
+  --output connection_mapping.json
+```
+
+The mapping file contains old-to-new connection ID pairs for future state application.
+
+### State Export File Format
+
+The `connection_states.json` file contains:
+
+```json
+{
+  "exportedAt": "2026-02-05T15:30:00Z",
+  "sourceApiUrl": "https://old-instance.airbyte.com",
+  "connections": [
+    {
+      "oldConnectionId": "3b79f0ab-f988-4d86-83d4-21488c2cef60",
+      "oldConnectionName": "postgres-to-snowflake",
+      "newConnectionId": "",
+      "oldSchedule": {
+        "scheduleType": "cron",
+        "cronExpression": "0 */6 * * *"
+      },
+      "oldStatus": "active",
+      "state": {
+        "stateType": "stream",
+        "connectionId": "3b79f0ab-f988-4d86-83d4-21488c2cef60",
+        "streamState": [...]
+      }
+    }
+  ]
+}
+```
+
+### Mapping File Format
+
+The `connection_mapping.json` file contains:
+
+```json
+{
+  "createdAt": "2026-02-05T16:00:00Z",
+  "mappings": [
+    {
+      "oldConnectionId": "3b79f0ab-f988-4d86-83d4-21488c2cef60",
+      "newConnectionId": "9c12d8ef-2a45-4b78-91cd-5e67f8901234",
+      "originalName": "postgres-to-snowflake"
+    }
+  ]
+}
+```
+
+### Future Enhancements
+
+State migration is currently limited to export and mapping generation. Future versions will support:
+- Applying saved states to new connections
+- Re-enabling connections after state import
+- Restoring original schedules and names
+
 ## Development
 
 ### Project Structure
@@ -94,15 +278,20 @@ See the [Airbyte API documentation](https://docs.airbyte.com/using-airbyte/confi
 .
 ├── cmd/
 │   ├── root.go        # Root command and CLI configuration
-│   └── airbyte.go     # Export logic and Airbyte API integration
+│   ├── airbyte.go     # Export logic and Airbyte API integration
+│   └── state.go       # State migration commands (export, map)
 ├── internal/
 │   ├── airbyte/
-│   │   └── types.go     # Airbyte API response types
+│   │   ├── types.go   # Airbyte API response types
+│   │   └── state.go   # State migration data structures
 │   ├── api/
-│   │   └── client.go    # HTTP client for API calls
-│   └── converter/
-│       ├── terraform.go # JSON to Terraform HCL converter
-│       └── cron.go      # Schedule conversion utilities
+│   │   └── client.go  # HTTP client for API calls
+│   ├── converter/
+│   │   ├── terraform.go # JSON to Terraform HCL converter
+│   │   └── cron.go      # Schedule conversion utilities
+│   └── state/
+│       ├── exporter.go  # State export logic
+│       └── mapper.go    # ID mapping generation
 ├── main.go              # Entry point with version info
 ├── go.mod
 └── README.md

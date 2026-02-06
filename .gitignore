@@ -24,3 +24,4 @@ crash.log
 # Local testing
 config.yaml
 fixtures
+connection_states.json

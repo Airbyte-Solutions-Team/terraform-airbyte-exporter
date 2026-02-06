@@ -25,6 +25,7 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	skipVersionCheck := viper.GetBool("airbyte.skip-version-check")
 	separateVariables := viper.GetBool("airbyte.separate-variables")
 	skipProviders := viper.GetBool("airbyte.skip-providers")
+	stateMigrationMode := viper.GetBool("airbyte.migrate-connection-state")
 
 	if baseURL == "" {
 		baseURL = "https://api.airbyte.com"
@@ -34,6 +35,7 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	client := api.NewClient(baseURL, clientID, clientSecret)
 	conv := converter.NewTerraformConverter()
 	conv.SetMigrate(migrate)
+	conv.SetStateMigrationMode(stateMigrationMode)
 
 	// Check if connection-id is specified for targeted export
 	connectionID := viper.GetString("airbyte.connection-id")

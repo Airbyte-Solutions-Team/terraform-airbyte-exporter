@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -217,4 +219,71 @@ func (c *Client) GetSourceByID(sourceID string) ([]byte, error) {
 func (c *Client) GetDestinationByID(destinationID string) ([]byte, error) {
 	endpoint := fmt.Sprintf("/v1/destinations/%s", destinationID)
 	return c.Get(endpoint, nil)
+}
+
+// GetConnectionState retrieves the state for a specific connection
+// Uses the internal /api/v1/state/get endpoint which is only available on the Airbyte server URL (not the public API)
+func (c *Client) GetConnectionState(connectionID string) ([]byte, error) {
+	// Get a valid access token first
+	if err := c.getAccessToken(); err != nil {
+		return nil, fmt.Errorf("failed to get access token: %w", err)
+	}
+
+	// Determine the correct base URL for the state endpoint
+	// The state endpoint is on the Airbyte server (web UI), not the public API
+	serverURL := c.baseURL
+
+	// If using the default public API URL, convert to the cloud server URL
+	if strings.HasPrefix(c.baseURL, "https://api.airbyte.com") {
+		serverURL = "https://cloud.airbyte.com"
+	}
+
+	// Parse the server URL to get the root
+	parsedURL, err := url.Parse(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse server URL: %w", err)
+	}
+
+	// Construct the state endpoint URL using the root
+	stateURL, err := url.JoinPath(parsedURL.Scheme+"://"+parsedURL.Host, "/api/v1/state/get")
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct state endpoint URL: %w", err)
+	}
+
+	// Prepare the request body
+	requestBody := map[string]interface{}{
+		"connectionId": connectionID,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	// Make the POST request
+	req, err := http.NewRequest("POST", stateURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("state API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	return body, nil
 }
