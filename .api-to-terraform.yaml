@@ -1,5 +1,14 @@
 # Example configuration file for api-to-terraform
 api:
-  url: "https://api.airbyte.com"  # Can also be set via AIRBYTE_API_URL environment variable
-  client_id: "your_client_id"  # Can also be set via AIRBYTE_API_CLIENT_ID environment variable  
+  # URL is optional - defaults to https://api.airbyte.com (Airbyte Cloud)
+  # For self-hosted instances, set this to your Airbyte URL with /api/public suffix
+  # url: "https://airbyte.mycompany.com/api/public"  # Can also be set via AIRBYTE_API_URL environment variable
+
+  # OAuth2 authentication (for Airbyte Cloud)
+  client_id: "your_client_id"  # Can also be set via AIRBYTE_API_CLIENT_ID environment variable
   client_secret: "your_client_secret"  # Can also be set via AIRBYTE_API_CLIENT_SECRET environment variable
+
+  # Basic authentication (for self-hosted/legacy Airbyte instances)
+  # If username and password are provided, they will be used instead of OAuth2
+  username: ""  # Can also be set via AIRBYTE_API_USERNAME environment variable
+  password: ""  # Can also be set via AIRBYTE_API_PASSWORD environment variable

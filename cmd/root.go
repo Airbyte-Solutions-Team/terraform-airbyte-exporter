@@ -38,8 +38,10 @@ func init() {
 	// Configuration and authentication flags
 	rootCmd.Flags().StringVar(&cfgFile, "config", "", "Config file location (default is $HOME/.abtfexport.yaml)")
 	rootCmd.Flags().String("api-url", "", "Base URL of the Airbyte API (default: https://api.airbyte.com)")
-	rootCmd.Flags().String("client-id", "", "Airbyte API client ID for authentication")
-	rootCmd.Flags().String("client-secret", "", "Airbyte API client secret for authentication")
+	rootCmd.Flags().String("client-id", "", "Airbyte API client ID for OAuth2 authentication")
+	rootCmd.Flags().String("client-secret", "", "Airbyte API client secret for OAuth2 authentication")
+	rootCmd.Flags().String("username", "", "Username for basic authentication")
+	rootCmd.Flags().String("password", "", "Password for basic authentication")
 	rootCmd.Flags().String("workspace", "", "Airbyte workspace ID to filter resources")
 
 	// Export behavior flags
@@ -57,6 +59,8 @@ func init() {
 	viper.BindPFlag("api.url", rootCmd.Flags().Lookup("api-url"))
 	viper.BindPFlag("api.client_id", rootCmd.Flags().Lookup("client-id"))
 	viper.BindPFlag("api.client_secret", rootCmd.Flags().Lookup("client-secret"))
+	viper.BindPFlag("api.username", rootCmd.Flags().Lookup("username"))
+	viper.BindPFlag("api.password", rootCmd.Flags().Lookup("password"))
 	viper.BindPFlag("api.workspace", rootCmd.Flags().Lookup("workspace"))
 	viper.BindPFlag("airbyte.output-dir", rootCmd.Flags().Lookup("output-dir"))
 	viper.BindPFlag("airbyte.split", rootCmd.Flags().Lookup("split"))

@@ -3,6 +3,7 @@ package converter
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -22,7 +23,10 @@ type TerraformConverter struct {
 	destIDToName         map[string]string // Map destination IDs to their resource names
 	sourceDefinitionSeen map[string]bool   // Track seen source definitions to avoid duplicates
 	workspaceID          string            // Store workspace ID for variable references
+	serverURL            string            // Store server URL to determine if it's the default
 }
+
+const defaultServerURL = "https://api.airbyte.com"
 
 // NewTerraformConverter creates a new Terraform converter
 func NewTerraformConverter() *TerraformConverter {
@@ -44,6 +48,58 @@ func (tc *TerraformConverter) SetMigrate(skip bool) {
 // SetWorkspaceID sets the workspace ID for variable references
 func (tc *TerraformConverter) SetWorkspaceID(workspaceID string) {
 	tc.workspaceID = workspaceID
+}
+
+// SetServerURL sets the server URL to determine if it's the default
+func (tc *TerraformConverter) SetServerURL(serverURL string) {
+	tc.serverURL = serverURL
+}
+
+// isDefaultServerURL checks if the server URL is the default
+func (tc *TerraformConverter) isDefaultServerURL() bool {
+	return tc.serverURL == "" || tc.serverURL == defaultServerURL
+}
+
+// shouldIncludeServerURL determines if server_url should be included in Terraform config
+// Returns true if:
+// - Using a custom (non-default) URL, OR
+// - Using default URL but NOT in migrate mode (i.e., generating import blocks for existing resources)
+func (tc *TerraformConverter) shouldIncludeServerURL() bool {
+	// Always include if using a custom URL
+	if !tc.isDefaultServerURL() {
+		return true
+	}
+
+	// If using default URL, only skip if we're in migrate mode (skipping imports)
+	// If NOT in migrate mode (generating imports), we need server_url for resource migration
+	return !tc.migrate
+}
+
+// getServerURLWithV1 returns the server URL with /v1 path appended if not present
+func (tc *TerraformConverter) getServerURLWithV1() (string, error) {
+	baseURL := tc.serverURL
+	if baseURL == "" {
+		baseURL = defaultServerURL
+	}
+
+	// Parse to check if it already has /v1 in the path
+	parsedURL, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid server URL: %w", err)
+	}
+
+	// Check if path already ends with /v1
+	if strings.HasSuffix(parsedURL.Path, "/v1") {
+		return baseURL, nil
+	}
+
+	// Use url.JoinPath to safely append /v1
+	fullURL, err := url.JoinPath(baseURL, "v1")
+	if err != nil {
+		return "", fmt.Errorf("failed to join URL path: %w", err)
+	}
+
+	return fullURL, nil
 }
 
 // getSourceReference returns the proper reference for a source ID
@@ -143,21 +199,36 @@ func (tc *TerraformConverter) GetVariablesHCL() string {
 	hclFile := hclwrite.NewEmptyFile()
 	rootBody := hclFile.Body()
 
-	// Add basic Airbyte variables first
-	basicVariables := map[string]string{
-		"server_url":    "Airbyte server URL",
-		"client_id":     "Airbyte API client ID",
-		"client_secret": "Airbyte API client secret",
-		"workspace_id":  "Airbyte workspace ID",
+	// Add basic Airbyte variables first (in order)
+	basicVariables := []struct {
+		name        string
+		description string
+		sensitive   bool
+	}{
+		{"server_url", "Airbyte server URL", false},
+		{"client_id", "Airbyte API client ID (OAuth2)", true},
+		{"client_secret", "Airbyte API client secret (OAuth2)", true},
+		{"username", "Username for basic authentication", false},
+		{"password", "Password for basic authentication", true},
+		{"workspace_id", "Airbyte workspace ID", false},
 	}
 
-	for varName, description := range basicVariables {
-		varBlock := rootBody.AppendNewBlock("variable", []string{varName})
+	for _, v := range basicVariables {
+		// Skip server_url based on URL and migrate mode
+		if v.name == "server_url" && !tc.shouldIncludeServerURL() {
+			continue
+		}
+
+		varBlock := rootBody.AppendNewBlock("variable", []string{v.name})
 		varBody := varBlock.Body()
 		varBody.SetAttributeRaw("type", hclwrite.Tokens{tc.tokenIdent("string")})
-		varBody.SetAttributeValue("description", cty.StringVal(description))
-		if varName == "client_id" || varName == "client_secret" {
+		varBody.SetAttributeValue("description", cty.StringVal(v.description))
+		if v.sensitive {
 			varBody.SetAttributeValue("sensitive", cty.BoolVal(true))
+		}
+		// Make username and password optional with default empty string
+		if v.name == "username" || v.name == "password" {
+			varBody.SetAttributeValue("default", cty.StringVal(""))
 		}
 		rootBody.AppendNewline()
 	}
@@ -188,10 +259,22 @@ func (tc *TerraformConverter) GetTfvarsContent() string {
 	builder.WriteString("# This file should be kept secure and not committed to version control\n\n")
 
 	// Add Airbyte API credentials section
-	builder.WriteString("# Destination Airbyte API credentials\n")
-	builder.WriteString("server_url    = \"YOUR_AIRBYTE_SERVER_URL\"\n")
+	builder.WriteString("# Airbyte API credentials\n")
+
+	// Include server_url based on URL and migrate mode
+	if tc.shouldIncludeServerURL() {
+		builder.WriteString("server_url    = \"YOUR_AIRBYTE_SERVER_URL\"\n\n")
+	}
+
+	builder.WriteString("# OAuth2 authentication (for Airbyte Cloud)\n")
 	builder.WriteString("client_id     = \"YOUR_AIRBYTE_CLIENT_ID\"\n")
-	builder.WriteString("client_secret = \"YOUR_AIRBYTE_CLIENT_SECRET\"\n")
+	builder.WriteString("client_secret = \"YOUR_AIRBYTE_CLIENT_SECRET\"\n\n")
+
+	builder.WriteString("# Basic authentication (for self-hosted/legacy Airbyte)\n")
+	builder.WriteString("# Uncomment and use these instead of client_id/client_secret if using basic auth\n")
+	builder.WriteString("# username = \"YOUR_USERNAME\"\n")
+	builder.WriteString("# password = \"YOUR_PASSWORD\"\n\n")
+
 	builder.WriteString("workspace_id  = \"YOUR_AIRBYTE_WORKSPACE_ID\"\n\n")
 
 	// Add other variables if they exist
@@ -241,9 +324,25 @@ func (tc *TerraformConverter) GetProvidersContent(providerVersion string, skipVe
 	builder.WriteString("  }\n")
 	builder.WriteString("}\n\n")
 	builder.WriteString("provider \"airbyte\" {\n")
-	builder.WriteString("  server_url   = var.server_url\n")
-	builder.WriteString("  client_id    = var.client_id\n")
-	builder.WriteString("  client_secret = var.client_secret\n")
+
+	// Include server_url based on URL and migrate mode
+	if tc.shouldIncludeServerURL() {
+		serverURLWithV1, err := tc.getServerURLWithV1()
+		if err != nil {
+			// Fallback to the original URL if there's an error
+			fmt.Fprintf(os.Stderr, "Warning: Failed to parse server URL: %v\n", err)
+			builder.WriteString(fmt.Sprintf("  server_url = \"%s\"\n\n", tc.serverURL))
+		} else {
+			builder.WriteString(fmt.Sprintf("  server_url = \"%s\"\n\n", serverURLWithV1))
+		}
+	}
+
+	builder.WriteString("  # OAuth2 authentication (comment out if using basic auth)\n")
+	builder.WriteString("  client_id     = var.client_id\n")
+	builder.WriteString("  client_secret = var.client_secret\n\n")
+	builder.WriteString("  # Basic authentication (uncomment if using basic auth)\n")
+	builder.WriteString("  # username = var.username\n")
+	builder.WriteString("  # password = var.password\n")
 	builder.WriteString("}\n")
 	return builder.String()
 }
@@ -583,9 +682,12 @@ func (tc *TerraformConverter) writeAttributesToBlock(body *hclwrite.Body, attrs 
 func (tc *TerraformConverter) writeAttribute(body *hclwrite.Body, key string, value interface{}) {
 	switch v := value.(type) {
 	case string:
-		// Check if this is a resource reference (starts with ${ and ends with })
-		if strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") {
-			// This is a resource reference - write without quotes
+		// Check if this is a Terraform variable/resource reference that should be unquoted
+		// We need to distinguish between:
+		// 1. Terraform references: ${var.foo}, ${airbyte_source_custom.x.id} - should be unquoted
+		// 2. Airbyte template variables: ${SOURCE_NAMESPACE}, ${STREAM_NAMESPACE} - should stay quoted
+		if strings.HasPrefix(v, "${var.") || strings.HasPrefix(v, "${airbyte_") {
+			// This is a Terraform variable/resource reference - write without quotes
 			refContent := v[2 : len(v)-1] // Remove ${ and }
 			body.SetAttributeRaw(key, hclwrite.Tokens{tc.tokenIdent(refContent)})
 		} else if strings.HasPrefix(v, "var.") {
@@ -598,6 +700,7 @@ func (tc *TerraformConverter) writeAttribute(body *hclwrite.Body, key string, va
 			// Check if this is a configuration field - always use jsonencode for consistency
 			tc.writeInterpolatedString(body, key, v)
 		} else {
+			// Everything else (including Airbyte template variables like ${SOURCE_NAMESPACE}) - write as quoted string
 			body.SetAttributeValue(key, cty.StringVal(v))
 		}
 	case float64:
@@ -1024,9 +1127,17 @@ func (tc *TerraformConverter) addSourceToJSON(resources map[string]interface{}, 
 		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed source '%s' - missing SourceID\n", source.Name)
 		return
 	}
-	if source.SourceDefinitionID == "" {
-		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed source '%s' - missing SourceDefinitionID\n", source.Name)
+
+	// Get definition ID with fallback to hardcoded mapping
+	definitionID := source.GetDefinitionID()
+	if definitionID == "" {
+		fmt.Fprintf(os.Stderr, "Warning: Skipping source '%s' (type: %s) - no definitionId available in API response or hardcoded mapping\n", source.Name, source.Type)
 		return
+	}
+
+	// Log when using fallback mapping
+	if source.SourceDefinitionID == "" && definitionID != "" {
+		fmt.Fprintf(os.Stderr, "Info: Using hardcoded definitionId for source '%s' (type: %s) -> %s\n", source.Name, source.Type, definitionID)
 	}
 
 	resourceType := "airbyte_source_custom"
@@ -1041,7 +1152,7 @@ func (tc *TerraformConverter) addSourceToJSON(resources map[string]interface{}, 
 	resource := map[string]interface{}{
 		"name":          source.Name,
 		"workspace_id":  tc.getWorkspaceReference(),
-		"definition_id": source.SourceDefinitionID,
+		"definition_id": definitionID,
 	}
 
 	// Validate and ensure all required fields are present
@@ -1082,9 +1193,17 @@ func (tc *TerraformConverter) addDestinationToJSON(resources map[string]interfac
 		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed destination '%s' - missing DestinationID\n", dest.Name)
 		return
 	}
-	if dest.DestinationDefinitionID == "" {
-		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed destination '%s' - missing DestinationDefinitionID\n", dest.Name)
+
+	// Get definition ID with fallback to hardcoded mapping
+	definitionID := dest.GetDefinitionID()
+	if definitionID == "" {
+		fmt.Fprintf(os.Stderr, "Warning: Skipping destination '%s' (type: %s) - no definitionId available in API response or hardcoded mapping\n", dest.Name, dest.Type)
 		return
+	}
+
+	// Log when using fallback mapping
+	if dest.DestinationDefinitionID == "" && definitionID != "" {
+		fmt.Fprintf(os.Stderr, "Info: Using hardcoded definitionId for destination '%s' (type: %s) -> %s\n", dest.Name, dest.Type, definitionID)
 	}
 
 	resourceType := "airbyte_destination_custom"
@@ -1099,7 +1218,7 @@ func (tc *TerraformConverter) addDestinationToJSON(resources map[string]interfac
 	resource := map[string]interface{}{
 		"name":          dest.Name,
 		"workspace_id":  tc.getWorkspaceReference(),
-		"definition_id": dest.DestinationDefinitionID,
+		"definition_id": definitionID,
 	}
 
 	// Validate and ensure all required fields are present

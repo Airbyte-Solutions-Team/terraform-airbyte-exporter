@@ -17,6 +17,16 @@ type Source struct {
 	Type                    string                 `json:"sourceType"`
 }
 
+// GetDefinitionID returns the definition ID, preferring the API-provided value
+// and falling back to the hardcoded mapping based on sourceType if not present
+func (s *Source) GetDefinitionID() string {
+	if s.SourceDefinitionID != "" {
+		return s.SourceDefinitionID
+	}
+	// Fallback to hardcoded mapping
+	return GetSourceDefinitionID(s.Type)
+}
+
 // DestinationResponse represents the response from the destinations endpoint
 type DestinationResponse struct {
 	Destinations []Destination `json:"data"`
@@ -32,6 +42,16 @@ type Destination struct {
 	CreatedAt               int                    `json:"createdAt"`
 	UpdatedAt               int                    `json:"updatedAt"`
 	Type                    string                 `json:"destinationType"`
+}
+
+// GetDefinitionID returns the definition ID, preferring the API-provided value
+// and falling back to the hardcoded mapping based on destinationType if not present
+func (d *Destination) GetDefinitionID() string {
+	if d.DestinationDefinitionID != "" {
+		return d.DestinationDefinitionID
+	}
+	// Fallback to hardcoded mapping
+	return GetDestinationDefinitionID(d.Type)
 }
 
 // ConnectionResponse represents the response from the connections endpoint

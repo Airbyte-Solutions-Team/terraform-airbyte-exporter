@@ -2,10 +2,12 @@ package api
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -14,19 +16,56 @@ type Client struct {
 	baseURL      string
 	clientID     string
 	clientSecret string
+	username     string
+	password     string
 	httpClient   *http.Client
 	accessToken  string
 	tokenExpiry  time.Time
 }
 
 // NewClient creates a new API client
-func NewClient(baseURL, clientID, clientSecret string) *Client {
+func NewClient(baseURL, clientID, clientSecret, username, password string) (*Client, error) {
+	// Validate that only one authentication method is provided
+	hasOAuth2 := clientID != "" || clientSecret != ""
+	hasBasicAuth := username != "" || password != ""
+
+	if hasOAuth2 && hasBasicAuth {
+		return nil, fmt.Errorf("cannot use both OAuth2 (client_id/client_secret) and basic auth (username/password) simultaneously - please choose one authentication method")
+	}
+
+	if !hasOAuth2 && !hasBasicAuth {
+		return nil, fmt.Errorf("authentication required: provide either OAuth2 credentials (client_id/client_secret) or basic auth credentials (username/password)")
+	}
+
+	// Validate OAuth2 credentials are complete
+	if hasOAuth2 && (clientID == "" || clientSecret == "") {
+		return nil, fmt.Errorf("incomplete OAuth2 credentials: both client_id and client_secret are required")
+	}
+
+	// Validate basic auth credentials are complete
+	if hasBasicAuth && (username == "" || password == "") {
+		return nil, fmt.Errorf("incomplete basic auth credentials: both username and password are required")
+	}
+
 	return &Client{
 		baseURL:      baseURL,
 		clientID:     clientID,
 		clientSecret: clientSecret,
+		username:     username,
+		password:     password,
 		httpClient:   &http.Client{},
-	}
+	}, nil
+}
+
+// encodeBasicAuth encodes username and password for basic authentication
+func (c *Client) encodeBasicAuth() string {
+	auth := c.username + ":" + c.password
+	return base64.StdEncoding.EncodeToString([]byte(auth))
+}
+
+// useBasicAuth returns true if username and password are configured
+func (c *Client) useBasicAuth() bool {
+	return c.username != "" && c.password != ""
 }
 
 // TokenRequest represents the request body for getting an access token
@@ -62,7 +101,10 @@ func (c *Client) getAccessToken() error {
 	}
 
 	// Make the token request
-	tokenURL := c.baseURL + "/v1/applications/token"
+	tokenURL, err := url.JoinPath(c.baseURL, "v1", "applications", "token")
+	if err != nil {
+		return fmt.Errorf("failed to construct token URL: %w", err)
+	}
 	req, err := http.NewRequest("POST", tokenURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("failed to create token request: %w", err)
@@ -97,20 +139,28 @@ func (c *Client) getAccessToken() error {
 
 // Get makes a GET request to the specified endpoint
 func (c *Client) Get(endpoint string, workspaceID *string) ([]byte, error) {
-	// Get a valid access token first
-	if err := c.getAccessToken(); err != nil {
-		return nil, fmt.Errorf("failed to get access token: %w", err)
+	fullURL, err := url.JoinPath(c.baseURL, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct URL: %w", err)
 	}
 
-	url := c.baseURL + endpoint
-
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", fullURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Add Bearer token authentication
-	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	// Set authentication header
+	if c.useBasicAuth() {
+		// Use basic authentication
+		req.Header.Set("Authorization", "Basic "+c.encodeBasicAuth())
+	} else {
+		// Get a valid access token first
+		if err := c.getAccessToken(); err != nil {
+			return nil, fmt.Errorf("failed to get access token: %w", err)
+		}
+		// Use bearer token authentication
+		req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	}
 
 	// Add workspace ID as query parameter if provided
 	if workspaceID != nil && *workspaceID != "" {
@@ -140,27 +190,35 @@ func (c *Client) Get(endpoint string, workspaceID *string) ([]byte, error) {
 
 // Post makes a POST request to the specified endpoint
 func (c *Client) Post(endpoint string, data interface{}) ([]byte, error) {
-	// Get a valid access token first
-	if err := c.getAccessToken(); err != nil {
-		return nil, fmt.Errorf("failed to get access token: %w", err)
+	fullURL, err := url.JoinPath(c.baseURL, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct URL: %w", err)
 	}
-
-	url := c.baseURL + endpoint
 
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal data: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", fullURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 
-	// Add Bearer token authentication
-	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	// Set authentication header
+	if c.useBasicAuth() {
+		// Use basic authentication
+		req.Header.Set("Authorization", "Basic "+c.encodeBasicAuth())
+	} else {
+		// Get a valid access token first
+		if err := c.getAccessToken(); err != nil {
+			return nil, fmt.Errorf("failed to get access token: %w", err)
+		}
+		// Use bearer token authentication
+		req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
