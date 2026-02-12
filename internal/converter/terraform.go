@@ -682,9 +682,12 @@ func (tc *TerraformConverter) writeAttributesToBlock(body *hclwrite.Body, attrs 
 func (tc *TerraformConverter) writeAttribute(body *hclwrite.Body, key string, value interface{}) {
 	switch v := value.(type) {
 	case string:
-		// Check if this is a resource reference (starts with ${ and ends with })
-		if strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") {
-			// This is a resource reference - write without quotes
+		// Check if this is a Terraform variable/resource reference that should be unquoted
+		// We need to distinguish between:
+		// 1. Terraform references: ${var.foo}, ${airbyte_source_custom.x.id} - should be unquoted
+		// 2. Airbyte template variables: ${SOURCE_NAMESPACE}, ${STREAM_NAMESPACE} - should stay quoted
+		if strings.HasPrefix(v, "${var.") || strings.HasPrefix(v, "${airbyte_") {
+			// This is a Terraform variable/resource reference - write without quotes
 			refContent := v[2 : len(v)-1] // Remove ${ and }
 			body.SetAttributeRaw(key, hclwrite.Tokens{tc.tokenIdent(refContent)})
 		} else if strings.HasPrefix(v, "var.") {
@@ -697,6 +700,7 @@ func (tc *TerraformConverter) writeAttribute(body *hclwrite.Body, key string, va
 			// Check if this is a configuration field - always use jsonencode for consistency
 			tc.writeInterpolatedString(body, key, v)
 		} else {
+			// Everything else (including Airbyte template variables like ${SOURCE_NAMESPACE}) - write as quoted string
 			body.SetAttributeValue(key, cty.StringVal(v))
 		}
 	case float64:
@@ -1123,9 +1127,17 @@ func (tc *TerraformConverter) addSourceToJSON(resources map[string]interface{}, 
 		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed source '%s' - missing SourceID\n", source.Name)
 		return
 	}
-	if source.SourceDefinitionID == "" {
-		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed source '%s' - missing SourceDefinitionID\n", source.Name)
+
+	// Get definition ID with fallback to hardcoded mapping
+	definitionID := source.GetDefinitionID()
+	if definitionID == "" {
+		fmt.Fprintf(os.Stderr, "Warning: Skipping source '%s' (type: %s) - no definitionId available in API response or hardcoded mapping\n", source.Name, source.Type)
 		return
+	}
+
+	// Log when using fallback mapping
+	if source.SourceDefinitionID == "" && definitionID != "" {
+		fmt.Fprintf(os.Stderr, "Info: Using hardcoded definitionId for source '%s' (type: %s) -> %s\n", source.Name, source.Type, definitionID)
 	}
 
 	resourceType := "airbyte_source_custom"
@@ -1140,7 +1152,7 @@ func (tc *TerraformConverter) addSourceToJSON(resources map[string]interface{}, 
 	resource := map[string]interface{}{
 		"name":          source.Name,
 		"workspace_id":  tc.getWorkspaceReference(),
-		"definition_id": source.SourceDefinitionID,
+		"definition_id": definitionID,
 	}
 
 	// Validate and ensure all required fields are present
@@ -1181,9 +1193,17 @@ func (tc *TerraformConverter) addDestinationToJSON(resources map[string]interfac
 		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed destination '%s' - missing DestinationID\n", dest.Name)
 		return
 	}
-	if dest.DestinationDefinitionID == "" {
-		fmt.Fprintf(os.Stderr, "Warning: Skipping malformed destination '%s' - missing DestinationDefinitionID\n", dest.Name)
+
+	// Get definition ID with fallback to hardcoded mapping
+	definitionID := dest.GetDefinitionID()
+	if definitionID == "" {
+		fmt.Fprintf(os.Stderr, "Warning: Skipping destination '%s' (type: %s) - no definitionId available in API response or hardcoded mapping\n", dest.Name, dest.Type)
 		return
+	}
+
+	// Log when using fallback mapping
+	if dest.DestinationDefinitionID == "" && definitionID != "" {
+		fmt.Fprintf(os.Stderr, "Info: Using hardcoded definitionId for destination '%s' (type: %s) -> %s\n", dest.Name, dest.Type, definitionID)
 	}
 
 	resourceType := "airbyte_destination_custom"
@@ -1198,7 +1218,7 @@ func (tc *TerraformConverter) addDestinationToJSON(resources map[string]interfac
 	resource := map[string]interface{}{
 		"name":          dest.Name,
 		"workspace_id":  tc.getWorkspaceReference(),
-		"definition_id": dest.DestinationDefinitionID,
+		"definition_id": definitionID,
 	}
 
 	// Validate and ensure all required fields are present
