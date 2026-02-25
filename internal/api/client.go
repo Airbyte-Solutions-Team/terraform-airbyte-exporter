@@ -25,7 +25,7 @@ func NewClient(baseURL, clientID, clientSecret string) *Client {
 		baseURL:      baseURL,
 		clientID:     clientID,
 		clientSecret: clientSecret,
-		httpClient:   &http.Client{},
+		httpClient:   &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -95,47 +95,81 @@ func (c *Client) getAccessToken() error {
 	return nil
 }
 
-// Get makes a GET request to the specified endpoint
+// Get makes a GET request to the specified endpoint, handling pagination automatically.
+// All pages are merged into a single JSON response with all items in the "data" array.
 func (c *Client) Get(endpoint string, workspaceID *string) ([]byte, error) {
-	// Get a valid access token first
 	if err := c.getAccessToken(); err != nil {
 		return nil, fmt.Errorf("failed to get access token: %w", err)
 	}
 
-	url := c.baseURL + endpoint
+	var allItems []json.RawMessage
+	nextURL := c.baseURL + endpoint
+	maxPages := 100
 
-	req, err := http.NewRequest("GET", url, nil)
+	for nextURL != "" && maxPages > 0 {
+		maxPages--
+		req, err := http.NewRequest("GET", nextURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Authorization", "Bearer "+c.accessToken)
+
+		// Only add query params on the first request; pagination URLs already include them
+		if nextURL == c.baseURL+endpoint {
+			q := req.URL.Query()
+			if workspaceID != nil && *workspaceID != "" {
+				q.Add("workspaceIds", *workspaceID)
+			}
+			q.Set("limit", "100")
+			req.URL.RawQuery = q.Encode()
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to make request: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response body: %w", err)
+		}
+
+		var page struct {
+			Data json.RawMessage `json:"data"`
+			Next string          `json:"next"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			return body, nil
+		}
+
+		if page.Data == nil {
+			return body, nil
+		}
+
+		var items []json.RawMessage
+		if err := json.Unmarshal(page.Data, &items); err != nil {
+			return body, nil
+		}
+
+		allItems = append(allItems, items...)
+		nextURL = page.Next
+	}
+
+	// Re-assemble into the expected {"data": [...]} envelope
+	dataBytes, err := json.Marshal(allItems)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to marshal combined results: %w", err)
 	}
-
-	// Add Bearer token authentication
-	req.Header.Set("Authorization", "Bearer "+c.accessToken)
-
-	// Add workspace ID as query parameter if provided
-	if workspaceID != nil && *workspaceID != "" {
-		q := req.URL.Query()
-		q.Add("workspaceId", *workspaceID)
-		req.URL.RawQuery = q.Encode()
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	return body, nil
+	result := fmt.Sprintf(`{"data":%s}`, string(dataBytes))
+	return []byte(result), nil
 }
 
 // Post makes a POST request to the specified endpoint

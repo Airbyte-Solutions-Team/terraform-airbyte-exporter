@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/Airbyte-Solutions-Team/terraform-airbyte-exporter/internal/airbyte"
@@ -143,15 +144,21 @@ func (tc *TerraformConverter) GetVariablesHCL() string {
 	hclFile := hclwrite.NewEmptyFile()
 	rootBody := hclFile.Body()
 
-	// Add basic Airbyte variables first
-	basicVariables := map[string]string{
-		"server_url":    "Airbyte server URL",
-		"client_id":     "Airbyte API client ID",
-		"client_secret": "Airbyte API client secret",
-		"workspace_id":  "Airbyte workspace ID",
+	// Add basic Airbyte variables first (ordered for readability)
+	type basicVar struct {
+		name string
+		desc string
+	}
+	basicVariables := []basicVar{
+		{"server_url", "Airbyte server URL"},
+		{"client_id", "Airbyte API client ID"},
+		{"client_secret", "Airbyte API client secret"},
+		{"workspace_id", "Airbyte workspace ID"},
 	}
 
-	for varName, description := range basicVariables {
+	for _, bv := range basicVariables {
+		varName := bv.name
+		description := bv.desc
 		varBlock := rootBody.AppendNewBlock("variable", []string{varName})
 		varBody := varBlock.Body()
 		varBody.SetAttributeRaw("type", hclwrite.Tokens{tc.tokenIdent("string")})
@@ -275,6 +282,9 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 	var connResp airbyte.ConnectionResponse
 	err := json.Unmarshal(jsonData, &connResp)
 	if err == nil && len(connResp.Connections) > 0 && connResp.Connections[0].ConnectionID != "" {
+		sort.Slice(connResp.Connections, func(i, j int) bool {
+			return connResp.Connections[i].Name < connResp.Connections[j].Name
+		})
 		for _, conn := range connResp.Connections {
 			if workspaceID != "" && conn.WorkspaceID != workspaceID {
 				continue
@@ -291,6 +301,9 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 	var sourceResp airbyte.SourceResponse
 	err = json.Unmarshal(jsonData, &sourceResp)
 	if err == nil && len(sourceResp.Sources) > 0 && sourceResp.Sources[0].SourceID != "" {
+		sort.Slice(sourceResp.Sources, func(i, j int) bool {
+			return sourceResp.Sources[i].Name < sourceResp.Sources[j].Name
+		})
 		for _, source := range sourceResp.Sources {
 			if workspaceID != "" && source.WorkspaceID != workspaceID {
 				continue
@@ -307,6 +320,9 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 	var destResp airbyte.DestinationResponse
 	err = json.Unmarshal(jsonData, &destResp)
 	if err == nil && len(destResp.Destinations) > 0 && destResp.Destinations[0].DestinationID != "" {
+		sort.Slice(destResp.Destinations, func(i, j int) bool {
+			return destResp.Destinations[i].Name < destResp.Destinations[j].Name
+		})
 		for _, dest := range destResp.Destinations {
 			if workspaceID != "" && dest.WorkspaceID != workspaceID {
 				continue
@@ -499,14 +515,26 @@ func (tc *TerraformConverter) convertJSONToHCL(tfJSON map[string]interface{}) (s
 		}
 	}
 
-	// Process each resource type
-	for resourceType, resourcesOfType := range resources {
+	// Process each resource type in sorted order for deterministic output
+	resourceTypes := make([]string, 0, len(resources))
+	for rt := range resources {
+		resourceTypes = append(resourceTypes, rt)
+	}
+	sort.Strings(resourceTypes)
+
+	for _, resourceType := range resourceTypes {
+		resourcesOfType := resources[resourceType]
 		if typeMap, ok := resourcesOfType.(map[string]interface{}); ok {
-			for resourceName, resourceData := range typeMap {
-				// Create the resource block in HCL
+			resourceNames := make([]string, 0, len(typeMap))
+			for rn := range typeMap {
+				resourceNames = append(resourceNames, rn)
+			}
+			sort.Strings(resourceNames)
+
+			for _, resourceName := range resourceNames {
+				resourceData := typeMap[resourceName]
 				resourceBlock := rootBody.AppendNewBlock("resource", []string{resourceType, resourceName})
 
-				// Write the resource attributes directly from our data structure
 				if resourceDataMap, ok := resourceData.(map[string]interface{}); ok {
 					tc.writeAttributesToBlock(resourceBlock.Body(), resourceDataMap)
 				}
@@ -565,9 +593,15 @@ func (tc *TerraformConverter) addImportComments(hclContent string) string {
 
 // writeAttributesToBlock writes attributes from a map to an HCL block
 func (tc *TerraformConverter) writeAttributesToBlock(body *hclwrite.Body, attrs map[string]interface{}) {
-	for key, value := range attrs {
+	keys := make([]string, 0, len(attrs))
+	for k := range attrs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		value := attrs[key]
 		if key == "to" {
-			// Special handling for "to" field - write as reference without quotes
 			if strVal, ok := value.(string); ok {
 				body.SetAttributeRaw(key, hclwrite.Tokens{tc.tokenIdent(strVal)})
 			} else {
@@ -681,19 +715,24 @@ func (tc *TerraformConverter) writeInterpolatedString(body *hclwrite.Body, key s
 		tc.tokenSymbol("\n"),
 	}
 
+	configKeys := make([]string, 0, len(configMap))
+	for k := range configMap {
+		configKeys = append(configKeys, k)
+	}
+	sort.Strings(configKeys)
+
 	first := true
-	for k, v := range configMap {
+	for _, k := range configKeys {
+		v := configMap[k]
 		if !first {
 			tokens = append(tokens, tc.tokenSymbol(","))
 			tokens = append(tokens, tc.tokenSymbol("\n"))
 		}
 		first = false
 
-		// Add key
 		tokens = append(tokens, tc.tokenIdent("    "+k))
 		tokens = append(tokens, tc.tokenSymbol(" = "))
 
-		// Add value
 		tc.addValueTokens(&tokens, v, "    ")
 	}
 
@@ -722,12 +761,18 @@ func (tc *TerraformConverter) addValueTokens(tokens *hclwrite.Tokens, value inte
 	case bool:
 		*tokens = append(*tokens, tc.tokenBool(v))
 	case map[string]interface{}:
-		// Nested object
 		*tokens = append(*tokens, tc.tokenSymbol("{"))
 		*tokens = append(*tokens, tc.tokenSymbol("\n"))
 
+		mapKeys := make([]string, 0, len(v))
+		for k := range v {
+			mapKeys = append(mapKeys, k)
+		}
+		sort.Strings(mapKeys)
+
 		first := true
-		for k, val := range v {
+		for _, k := range mapKeys {
+			val := v[k]
 			if !first {
 				*tokens = append(*tokens, tc.tokenSymbol(","))
 				*tokens = append(*tokens, tc.tokenSymbol("\n"))
@@ -743,7 +788,6 @@ func (tc *TerraformConverter) addValueTokens(tokens *hclwrite.Tokens, value inte
 		*tokens = append(*tokens, tc.tokenIdent(indent))
 		*tokens = append(*tokens, tc.tokenSymbol("}"))
 	case []interface{}:
-		// Array
 		*tokens = append(*tokens, tc.tokenSymbol("["))
 		for i, item := range v {
 			if i > 0 {
@@ -847,8 +891,15 @@ func (tc *TerraformConverter) writeStreamsAttribute(body *hclwrite.Body, key str
 func (tc *TerraformConverter) writeMapTokens(tokens *hclwrite.Tokens, m map[string]interface{}, indent string) {
 	*tokens = append(*tokens, tc.tokenSymbol("{"))
 
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	first := true
-	for k, v := range m {
+	for _, k := range keys {
+		v := m[k]
 		if !first {
 			*tokens = append(*tokens, tc.tokenSymbol(","))
 		}
@@ -908,25 +959,29 @@ func (tc *TerraformConverter) writeMapAttribute(body *hclwrite.Body, key string,
 		return
 	}
 
-	// Parse JSON and write as HCL expression
 	tokens := hclwrite.Tokens{
 		tc.tokenSymbol("{"),
 		tc.tokenSymbol("\n"),
 	}
 
+	mapKeys := make([]string, 0, len(m))
+	for k := range m {
+		mapKeys = append(mapKeys, k)
+	}
+	sort.Strings(mapKeys)
+
 	first := true
-	for k, v := range m {
+	for _, k := range mapKeys {
+		v := m[k]
 		if !first {
 			tokens = append(tokens, tc.tokenSymbol(","))
 			tokens = append(tokens, tc.tokenSymbol("\n"))
 		}
 		first = false
 
-		// Add key
 		tokens = append(tokens, tc.tokenIdent("  "+k))
 		tokens = append(tokens, tc.tokenSymbol(" = "))
 
-		// Add value
 		switch val := v.(type) {
 		case string:
 			tokens = append(tokens, tc.tokenString(val)...)
@@ -935,7 +990,6 @@ func (tc *TerraformConverter) writeMapAttribute(body *hclwrite.Body, key string,
 		case bool:
 			tokens = append(tokens, tc.tokenBool(val))
 		default:
-			// For complex values, use JSON
 			valJSON, _ := json.Marshal(val)
 			tokens = append(tokens, tc.tokenString(string(valJSON))...)
 		}
@@ -954,7 +1008,14 @@ func (tc *TerraformConverter) writeConfigurationsBlock(body *hclwrite.Body, key 
 		tc.tokenSymbol("\n"),
 	}
 
-	for k, v := range m {
+	cfgKeys := make([]string, 0, len(m))
+	for k := range m {
+		cfgKeys = append(cfgKeys, k)
+	}
+	sort.Strings(cfgKeys)
+
+	for _, k := range cfgKeys {
+		v := m[k]
 		tokens = append(tokens, tc.tokenIdent("  "+k))
 		tokens = append(tokens, tc.tokenSymbol(" = "))
 
