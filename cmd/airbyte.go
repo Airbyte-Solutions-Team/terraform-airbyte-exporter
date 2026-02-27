@@ -27,6 +27,7 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	skipVersionCheck := viper.GetBool("airbyte.skip-version-check")
 	separateVariables := viper.GetBool("airbyte.separate-variables")
 	skipProviders := viper.GetBool("airbyte.skip-providers")
+	legacyDefinitions := viper.GetBool("airbyte.legacy-definitions")
 
 	if baseURL == "" {
 		baseURL = "https://api.airbyte.com"
@@ -44,7 +45,7 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	// Check if connection-id is specified for targeted export
 	connectionID := viper.GetString("airbyte.connection-id")
 	if connectionID != "" {
-		return exportSingleConnection(client, conv, connectionID, outputDir, splitFiles, providerVersion, skipVersionCheck, separateVariables, skipProviders)
+		return exportSingleConnection(client, conv, connectionID, outputDir, splitFiles, providerVersion, skipVersionCheck, separateVariables, skipProviders, legacyDefinitions)
 	}
 
 	// Get workspace ID from config
@@ -129,38 +130,53 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	if len(workspaceIDs) > 0 {
 		fmt.Fprintf(os.Stderr, "Fetching custom source and destination definitions...\n")
 		for _, wsID := range workspaceIDs {
-			// Try the public API endpoint first, fall back to internal config API
-			endpoint := fmt.Sprintf("/v1/workspaces/%s/definitions/declarative_sources", wsID)
-			data, err := client.Get(endpoint, nil)
-			if err != nil {
-				// Fall back to internal config API
-				data, err = client.GetCustomSourceDefinitions(wsID)
+			if legacyDefinitions {
+				// Use internal config API (for Airbyte Platform < v1.6.0)
+				data, err := client.GetCustomSourceDefinitions(wsID)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: Failed to fetch custom source definitions for workspace %s: %v\n", wsID, err)
+				} else {
+					terraform, err := conv.Convert(data, wsID)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: Failed to convert custom source definitions for workspace %s: %v\n", wsID, err)
+					} else if terraform != "" && strings.TrimSpace(terraform) != "" {
+						if customDefsTerraform != "" {
+							customDefsTerraform += "\n\n"
+						}
+						customDefsTerraform += terraform
+					}
 				}
-			}
 
-			if data != nil {
+				destData, err := client.GetCustomDestinationDefinitions(wsID)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: Failed to fetch custom destination definitions for workspace %s: %v\n", wsID, err)
+				} else {
+					terraform, err := conv.Convert(destData, wsID)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: Failed to convert custom destination definitions for workspace %s: %v\n", wsID, err)
+					} else if terraform != "" && strings.TrimSpace(terraform) != "" {
+						if customDefsTerraform != "" {
+							customDefsTerraform += "\n\n"
+						}
+						customDefsTerraform += terraform
+					}
+				}
+			} else {
+				// Use public API endpoint
+				endpoint := fmt.Sprintf("/v1/workspaces/%s/definitions/declarative_sources", wsID)
+				data, err := client.Get(endpoint, nil)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: Failed to fetch declarative source definitions for workspace %s: %v\n", wsID, err)
+					continue
+				}
+
 				terraform, err := conv.Convert(data, wsID)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: Failed to convert custom source definitions for workspace %s: %v\n", wsID, err)
-				} else if terraform != "" && strings.TrimSpace(terraform) != "" {
-					if customDefsTerraform != "" {
-						customDefsTerraform += "\n\n"
-					}
-					customDefsTerraform += terraform
+					fmt.Fprintf(os.Stderr, "Warning: Failed to convert declarative source definitions for workspace %s: %v\n", wsID, err)
+					continue
 				}
-			}
 
-			// Fetch custom destination definitions via internal config API
-			destData, err := client.GetCustomDestinationDefinitions(wsID)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: Failed to fetch custom destination definitions for workspace %s: %v\n", wsID, err)
-			} else {
-				terraform, err := conv.Convert(destData, wsID)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: Failed to convert custom destination definitions for workspace %s: %v\n", wsID, err)
-				} else if terraform != "" && strings.TrimSpace(terraform) != "" {
+				if terraform != "" && strings.TrimSpace(terraform) != "" {
 					if customDefsTerraform != "" {
 						customDefsTerraform += "\n\n"
 					}
@@ -298,7 +314,7 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 }
 
 // exportSingleConnection exports a specific connection and its associated source and destination
-func exportSingleConnection(client *api.Client, conv *converter.TerraformConverter, connectionID string, outputDir string, splitFiles bool, providerVersion string, skipVersionCheck bool, separateVariables bool, skipProviders bool) error {
+func exportSingleConnection(client *api.Client, conv *converter.TerraformConverter, connectionID string, outputDir string, splitFiles bool, providerVersion string, skipVersionCheck bool, separateVariables bool, skipProviders bool, legacyDefinitions bool) error {
 	fmt.Fprintf(os.Stderr, "Exporting specific connection: %s\n", connectionID)
 
 	// Reset variables at the start
@@ -379,17 +395,23 @@ func exportSingleConnection(client *api.Client, conv *converter.TerraformConvert
 	// Fetch custom source definition if the source uses one
 	var customDefTF string
 	if source.SourceDefinitionID != "" {
-		// Try the public API endpoint first, fall back to internal config API
-		endpoint := fmt.Sprintf("/v1/workspaces/%s/definitions/declarative_sources", workspaceID)
-		declData, err := client.Get(endpoint, nil)
-		if err != nil {
-			// Fall back to internal config API
-			declData, err = client.GetCustomSourceDefinitions(workspaceID)
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to fetch source definitions: %v\n", err)
+		if legacyDefinitions {
+			// Use internal config API (for Airbyte Platform < v1.6.0)
+			data, err := client.GetCustomSourceDefinitions(workspaceID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Failed to fetch custom source definitions: %v\n", err)
+			} else {
+				customDefTF, _ = conv.Convert(data, workspaceID)
+			}
 		} else {
-			customDefTF, _ = conv.Convert(declData, workspaceID)
+			// Use public API endpoint
+			endpoint := fmt.Sprintf("/v1/workspaces/%s/definitions/declarative_sources", workspaceID)
+			data, err := client.Get(endpoint, nil)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Failed to fetch declarative source definitions: %v\n", err)
+			} else {
+				customDefTF, _ = conv.Convert(data, workspaceID)
+			}
 		}
 	}
 

@@ -54,6 +54,7 @@ func init() {
 	rootCmd.Flags().Bool("include-variables", true, "Include variables.tf content inside airbyte.tf (single file mode only)")
 	rootCmd.Flags().Bool("separate-variables", false, "Generate separate variables.tf file instead of including in airbyte.tf")
 	rootCmd.Flags().Bool("skip-providers", false, "Skip generating providers.tf file")
+	rootCmd.Flags().Bool("legacy-definitions", false, "Fetch custom source/destination definitions via the internal config API (for Airbyte Platform < v1.6.0)")
 
 	// Bind flags to viper
 	viper.BindPFlag("api.url", rootCmd.Flags().Lookup("api-url"))
@@ -71,6 +72,7 @@ func init() {
 	viper.BindPFlag("airbyte.include-variables", rootCmd.Flags().Lookup("include-variables"))
 	viper.BindPFlag("airbyte.separate-variables", rootCmd.Flags().Lookup("separate-variables"))
 	viper.BindPFlag("airbyte.skip-providers", rootCmd.Flags().Lookup("skip-providers"))
+	viper.BindPFlag("airbyte.legacy-definitions", rootCmd.Flags().Lookup("legacy-definitions"))
 }
 
 // initConfig reads in config file and ENV variables if set.
