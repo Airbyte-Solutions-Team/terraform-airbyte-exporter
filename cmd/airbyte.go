@@ -27,6 +27,7 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	skipVersionCheck := viper.GetBool("airbyte.skip-version-check")
 	separateVariables := viper.GetBool("airbyte.separate-variables")
 	skipProviders := viper.GetBool("airbyte.skip-providers")
+	legacyDefinitions := viper.GetBool("airbyte.legacy-definitions")
 
 	if baseURL == "" {
 		baseURL = "https://api.airbyte.com"
@@ -44,7 +45,7 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	// Check if connection-id is specified for targeted export
 	connectionID := viper.GetString("airbyte.connection-id")
 	if connectionID != "" {
-		return exportSingleConnection(client, conv, connectionID, outputDir, splitFiles, providerVersion, skipVersionCheck, separateVariables, skipProviders)
+		return exportSingleConnection(client, conv, connectionID, outputDir, splitFiles, providerVersion, skipVersionCheck, separateVariables, skipProviders, legacyDefinitions)
 	}
 
 	// Get workspace ID from config
@@ -124,46 +125,75 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Fetch declarative source definitions if we have workspace IDs
-	var declarativeDefsTerraform string
+	// Fetch custom source and destination definitions if we have workspace IDs
+	var customDefsTerraform string
 	if len(workspaceIDs) > 0 {
-		fmt.Fprintf(os.Stderr, "Fetching declarative source definitions...\n")
+		fmt.Fprintf(os.Stderr, "Fetching custom source and destination definitions...\n")
 		for _, wsID := range workspaceIDs {
-			endpoint := fmt.Sprintf("/v1/workspaces/%s/definitions/declarative_sources", wsID)
-
-			data, err := client.Get(endpoint, nil)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: Failed to fetch declarative source definitions for workspace %s: %v\n", wsID, err)
-				continue
-			}
-
-			// Convert to Terraform
-			terraform, err := conv.Convert(data, wsID)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: Failed to convert declarative source definitions for workspace %s: %v\n", wsID, err)
-				continue
-			}
-
-			// Only append if we got actual content (not just empty result)
-			if terraform != "" && strings.TrimSpace(terraform) != "" {
-				if declarativeDefsTerraform != "" {
-					declarativeDefsTerraform += "\n\n"
+			if legacyDefinitions {
+				// Use internal config API (for Airbyte Platform < v1.6.0)
+				data, err := client.GetCustomSourceDefinitions(wsID)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: Failed to fetch custom source definitions for workspace %s: %v\n", wsID, err)
+				} else {
+					terraform, err := conv.Convert(data, wsID)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: Failed to convert custom source definitions for workspace %s: %v\n", wsID, err)
+					} else if terraform != "" && strings.TrimSpace(terraform) != "" {
+						if customDefsTerraform != "" {
+							customDefsTerraform += "\n\n"
+						}
+						customDefsTerraform += terraform
+					}
 				}
-				declarativeDefsTerraform += terraform
+
+				destData, err := client.GetCustomDestinationDefinitions(wsID)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: Failed to fetch custom destination definitions for workspace %s: %v\n", wsID, err)
+				} else {
+					terraform, err := conv.Convert(destData, wsID)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: Failed to convert custom destination definitions for workspace %s: %v\n", wsID, err)
+					} else if terraform != "" && strings.TrimSpace(terraform) != "" {
+						if customDefsTerraform != "" {
+							customDefsTerraform += "\n\n"
+						}
+						customDefsTerraform += terraform
+					}
+				}
+			} else {
+				// Use public API endpoint
+				endpoint := fmt.Sprintf("/v1/workspaces/%s/definitions/declarative_sources", wsID)
+				data, err := client.Get(endpoint, nil)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: Failed to fetch declarative source definitions for workspace %s: %v\n", wsID, err)
+					continue
+				}
+
+				terraform, err := conv.Convert(data, wsID)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: Failed to convert declarative source definitions for workspace %s: %v\n", wsID, err)
+					continue
+				}
+
+				if terraform != "" && strings.TrimSpace(terraform) != "" {
+					if customDefsTerraform != "" {
+						customDefsTerraform += "\n\n"
+					}
+					customDefsTerraform += terraform
+				}
 			}
 		}
 
-		if declarativeDefsTerraform != "" {
+		if customDefsTerraform != "" {
 			if splitFiles {
-				// Store the terraform content for later
-				allResources = append(allResources, declarativeDefsTerraform)
+				allResources = append(allResources, customDefsTerraform)
 			} else {
-				// Append to combined output
 				if allTerraform.Len() > 0 {
 					allTerraform.WriteString("\n\n")
 				}
-				allTerraform.WriteString("# Declarative Source Definitions\n")
-				allTerraform.WriteString(declarativeDefsTerraform)
+				allTerraform.WriteString("# Custom Source and Destination Definitions\n")
+				allTerraform.WriteString(customDefsTerraform)
 			}
 		}
 	}
@@ -212,14 +242,14 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		// Write declarative source definitions file if we have any
+		// Write custom definitions file if we have any
 		if len(allResources) > len(resources) {
-			filepath := fmt.Sprintf("%s/declarative_source_definitions.tf", outputDir)
+			filepath := fmt.Sprintf("%s/custom_definitions.tf", outputDir)
 			err := os.WriteFile(filepath, []byte(allResources[len(resources)]), 0644)
 			if err != nil {
-				return fmt.Errorf("failed to write declarative_source_definitions.tf: %w", err)
+				return fmt.Errorf("failed to write custom_definitions.tf: %w", err)
 			}
-			fmt.Fprintf(os.Stderr, "Wrote declarative source definitions to %s\n", filepath)
+			fmt.Fprintf(os.Stderr, "Wrote custom definitions to %s\n", filepath)
 		}
 	} else {
 		// Handle variables based on separate-variables flag
@@ -277,14 +307,14 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	}
 
 	// Print success message
-	hasDeclarativeDefs := declarativeDefsTerraform != ""
-	printSuccessMessage(outputDir, splitFiles, variablesHCL != "", true, migrate, hasDeclarativeDefs, separateVariables, skipProviders)
+	hasCustomDefs := customDefsTerraform != ""
+	printSuccessMessage(outputDir, splitFiles, variablesHCL != "", true, migrate, hasCustomDefs, separateVariables, skipProviders)
 
 	return nil
 }
 
 // exportSingleConnection exports a specific connection and its associated source and destination
-func exportSingleConnection(client *api.Client, conv *converter.TerraformConverter, connectionID string, outputDir string, splitFiles bool, providerVersion string, skipVersionCheck bool, separateVariables bool, skipProviders bool) error {
+func exportSingleConnection(client *api.Client, conv *converter.TerraformConverter, connectionID string, outputDir string, splitFiles bool, providerVersion string, skipVersionCheck bool, separateVariables bool, skipProviders bool, legacyDefinitions bool) error {
 	fmt.Fprintf(os.Stderr, "Exporting specific connection: %s\n", connectionID)
 
 	// Reset variables at the start
@@ -362,34 +392,25 @@ func exportSingleConnection(client *api.Client, conv *converter.TerraformConvert
 		return fmt.Errorf("failed to convert connection to Terraform: %w", err)
 	}
 
-	// Check if the source is a declarative source by checking its type
-	var declarativeDefTF string
-	if source.Type == "declarative-source" || strings.Contains(strings.ToLower(source.Type), "declarative") {
-		// Try to fetch declarative source definition
-		fmt.Fprintf(os.Stderr, "Source appears to be a declarative source, fetching definition...\n")
-		endpoint := fmt.Sprintf("/v1/workspaces/%s/definitions/declarative_sources", workspaceID)
-		declData, err := client.Get(endpoint, nil)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to fetch declarative source definitions: %v\n", err)
+	// Fetch custom source definition if the source uses one
+	var customDefTF string
+	if source.SourceDefinitionID != "" {
+		if legacyDefinitions {
+			// Use internal config API (for Airbyte Platform < v1.6.0)
+			data, err := client.GetCustomSourceDefinitions(workspaceID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Failed to fetch custom source definitions: %v\n", err)
+			} else {
+				customDefTF, _ = conv.Convert(data, workspaceID)
+			}
 		} else {
-			// Parse the response to find the matching definition
-			var declResp airbyte.DeclarativeSourceDefinitionResponse
-			if err := json.Unmarshal(declData, &declResp); err == nil {
-				// Find the definition that matches this source's definition ID
-				for _, def := range declResp.DeclarativeSourceDefinitions {
-					if def.ID == source.SourceDefinitionID {
-						// Convert to Terraform
-						singleDefResp := airbyte.DeclarativeSourceDefinitionResponse{
-							DeclarativeSourceDefinitions: []airbyte.DeclarativeSourceDefinition{def},
-						}
-						defJSON, _ := json.Marshal(singleDefResp)
-						declarativeDefTF, err = conv.Convert(defJSON, workspaceID)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Warning: Failed to convert declarative source definition: %v\n", err)
-						}
-						break
-					}
-				}
+			// Use public API endpoint
+			endpoint := fmt.Sprintf("/v1/workspaces/%s/definitions/declarative_sources", workspaceID)
+			data, err := client.Get(endpoint, nil)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Failed to fetch declarative source definitions: %v\n", err)
+			} else {
+				customDefTF, _ = conv.Convert(data, workspaceID)
 			}
 		}
 	}
@@ -421,13 +442,13 @@ func exportSingleConnection(client *api.Client, conv *converter.TerraformConvert
 		}
 		fmt.Fprintf(os.Stderr, "Wrote connection to %s\n", connPath)
 
-		// Write declarative source definition if present
-		if declarativeDefTF != "" && strings.TrimSpace(declarativeDefTF) != "" {
-			defPath := fmt.Sprintf("%s/declarative_source_definitions.tf", outputDir)
-			if err := os.WriteFile(defPath, []byte(declarativeDefTF), 0644); err != nil {
-				return fmt.Errorf("failed to write declarative_source_definitions.tf: %w", err)
+		// Write custom definitions if present
+		if customDefTF != "" && strings.TrimSpace(customDefTF) != "" {
+			defPath := fmt.Sprintf("%s/custom_definitions.tf", outputDir)
+			if err := os.WriteFile(defPath, []byte(customDefTF), 0644); err != nil {
+				return fmt.Errorf("failed to write custom_definitions.tf: %w", err)
 			}
-			fmt.Fprintf(os.Stderr, "Wrote declarative source definition to %s\n", defPath)
+			fmt.Fprintf(os.Stderr, "Wrote custom definitions to %s\n", defPath)
 		}
 
 		// Write variables file
@@ -455,10 +476,10 @@ func exportSingleConnection(client *api.Client, conv *converter.TerraformConvert
 		allTerraform.WriteString("# Connection\n")
 		allTerraform.WriteString(connTF)
 
-		if declarativeDefTF != "" && strings.TrimSpace(declarativeDefTF) != "" {
+		if customDefTF != "" && strings.TrimSpace(customDefTF) != "" {
 			allTerraform.WriteString("\n\n")
-			allTerraform.WriteString("# Declarative Source Definition\n")
-			allTerraform.WriteString(declarativeDefTF)
+			allTerraform.WriteString("# Custom Definitions\n")
+			allTerraform.WriteString(customDefTF)
 		}
 
 		filepath := fmt.Sprintf("%s/airbyte.tf", outputDir)
@@ -495,13 +516,13 @@ func exportSingleConnection(client *api.Client, conv *converter.TerraformConvert
 	fmt.Fprintf(os.Stderr, "Wrote variable values template to %s\n", tfvarsPath)
 
 	// Print success message
-	hasDeclarativeDefs := declarativeDefTF != "" && strings.TrimSpace(declarativeDefTF) != ""
-	printSuccessMessage(outputDir, splitFiles, variablesHCL != "", true, true, hasDeclarativeDefs, separateVariables, skipProviders)
+	hasCustomDefs := customDefTF != "" && strings.TrimSpace(customDefTF) != ""
+	printSuccessMessage(outputDir, splitFiles, variablesHCL != "", true, true, hasCustomDefs, separateVariables, skipProviders)
 
 	return nil
 }
 
-func printSuccessMessage(outputDir string, splitFiles bool, hasVariables bool, hasTfvars bool, migrate bool, hasDeclarativeDefs bool, separateVariables bool, skipProviders bool) {
+func printSuccessMessage(outputDir string, splitFiles bool, hasVariables bool, hasTfvars bool, migrate bool, hasCustomDefs bool, separateVariables bool, skipProviders bool) {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Export completed successfully!")
 	fmt.Fprintln(os.Stderr, "")
@@ -511,8 +532,8 @@ func printSuccessMessage(outputDir string, splitFiles bool, hasVariables bool, h
 		fmt.Fprintf(os.Stderr, "  • %s/sources.tf\n", outputDir)
 		fmt.Fprintf(os.Stderr, "  • %s/destinations.tf\n", outputDir)
 		fmt.Fprintf(os.Stderr, "  • %s/connections.tf\n", outputDir)
-		if hasDeclarativeDefs {
-			fmt.Fprintf(os.Stderr, "  • %s/declarative_source_definitions.tf\n", outputDir)
+		if hasCustomDefs {
+			fmt.Fprintf(os.Stderr, "  • %s/custom_definitions.tf\n", outputDir)
 		}
 		fmt.Fprintf(os.Stderr, "  • %s/variables.tf\n", outputDir)
 	} else {

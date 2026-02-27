@@ -140,6 +140,36 @@ type DeclarativeSourceDefinition struct {
 	WorkspaceID string                 `json:"workspaceId,omitempty"`
 }
 
+// CustomSourceDefinitionListResponse represents the response from the internal source_definitions/list_for_workspace endpoint
+type CustomSourceDefinitionListResponse struct {
+	SourceDefinitions []CustomSourceDefinition `json:"sourceDefinitions"`
+}
+
+// CustomSourceDefinition represents a source definition from the internal config API
+type CustomSourceDefinition struct {
+	SourceDefinitionID string `json:"sourceDefinitionId"`
+	Name               string `json:"name"`
+	DockerRepository   string `json:"dockerRepository"`
+	DockerImageTag     string `json:"dockerImageTag"`
+	DocumentationURL   string `json:"documentationUrl"`
+	Custom             bool   `json:"custom"`
+}
+
+// CustomDestinationDefinitionListResponse represents the response from the internal destination_definitions/list_for_workspace endpoint
+type CustomDestinationDefinitionListResponse struct {
+	DestinationDefinitions []CustomDestinationDefinition `json:"destinationDefinitions"`
+}
+
+// CustomDestinationDefinition represents a destination definition from the internal config API
+type CustomDestinationDefinition struct {
+	DestinationDefinitionID string `json:"destinationDefinitionId"`
+	Name                    string `json:"name"`
+	DockerRepository        string `json:"dockerRepository"`
+	DockerImageTag          string `json:"dockerImageTag"`
+	DocumentationURL        string `json:"documentationUrl"`
+	Custom                  bool   `json:"custom"`
+}
+
 // WorkspaceResponse represents the response from the workspaces endpoint
 type WorkspaceResponse struct {
 	Workspaces []Workspace `json:"data"`

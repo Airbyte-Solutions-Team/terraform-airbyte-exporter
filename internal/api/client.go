@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -275,4 +276,69 @@ func (c *Client) GetSourceByID(sourceID string) ([]byte, error) {
 func (c *Client) GetDestinationByID(destinationID string) ([]byte, error) {
 	endpoint := fmt.Sprintf("/v1/destinations/%s", destinationID)
 	return c.Get(endpoint, nil)
+}
+
+// internalBaseURL returns the base URL for the internal config API
+// by stripping "/public" from the public API base URL.
+// e.g., "https://host/api/public" -> "https://host/api"
+func (c *Client) internalBaseURL() string {
+	return strings.TrimSuffix(c.baseURL, "/public")
+}
+
+// PostInternal makes a POST request to the internal config API
+func (c *Client) PostInternal(endpoint string, data interface{}) ([]byte, error) {
+	fullURL, err := url.JoinPath(c.internalBaseURL(), endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct URL: %w", err)
+	}
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal data: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", fullURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// Set authentication header
+	if c.useBasicAuth() {
+		req.Header.Set("Authorization", "Basic "+c.encodeBasicAuth())
+	} else {
+		if err := c.getAccessToken(); err != nil {
+			return nil, fmt.Errorf("failed to get access token: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	return body, nil
+}
+
+// GetCustomSourceDefinitions fetches custom source definitions for a workspace via the internal config API
+func (c *Client) GetCustomSourceDefinitions(workspaceID string) ([]byte, error) {
+	return c.PostInternal("/v1/source_definitions/list_for_workspace", map[string]string{"workspaceId": workspaceID})
+}
+
+// GetCustomDestinationDefinitions fetches custom destination definitions for a workspace via the internal config API
+func (c *Client) GetCustomDestinationDefinitions(workspaceID string) ([]byte, error) {
+	return c.PostInternal("/v1/destination_definitions/list_for_workspace", map[string]string{"workspaceId": workspaceID})
 }

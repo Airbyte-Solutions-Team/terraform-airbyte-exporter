@@ -447,6 +447,30 @@ func (tc *TerraformConverter) tryParseAirbyteResponse(jsonData []byte, tfJSON ma
 		}
 	}
 
+	// Try parsing as CustomSourceDefinitionListResponse (internal config API)
+	var customSourceResp airbyte.CustomSourceDefinitionListResponse
+	if err := json.Unmarshal(jsonData, &customSourceResp); err == nil && len(customSourceResp.SourceDefinitions) > 0 && customSourceResp.SourceDefinitions[0].SourceDefinitionID != "" {
+		for _, def := range customSourceResp.SourceDefinitions {
+			if def.Custom {
+				tc.addCustomSourceDefinitionToJSON(resources, def, workspaceID, &imports)
+			}
+		}
+		tfJSON["import"] = imports
+		return nil
+	}
+
+	// Try parsing as CustomDestinationDefinitionListResponse (internal config API)
+	var customDestResp airbyte.CustomDestinationDefinitionListResponse
+	if err := json.Unmarshal(jsonData, &customDestResp); err == nil && len(customDestResp.DestinationDefinitions) > 0 && customDestResp.DestinationDefinitions[0].DestinationDefinitionID != "" {
+		for _, def := range customDestResp.DestinationDefinitions {
+			if def.Custom {
+				tc.addCustomDestinationDefinitionToJSON(resources, def, workspaceID, &imports)
+			}
+		}
+		tfJSON["import"] = imports
+		return nil
+	}
+
 	return fmt.Errorf("not a recognized Airbyte response type")
 }
 
@@ -1513,5 +1537,88 @@ func (tc *TerraformConverter) addDeclarativeSourceDefinitionToJSON(resources map
 		// Store comment for this import
 		importKey := fmt.Sprintf("%s.%s", resourceType, resourceName)
 		tc.importComments[importKey] = fmt.Sprintf("Declarative Source Definition: %s", def.Name)
+	}
+}
+
+// addCustomSourceDefinitionToJSON adds a custom source definition to the Terraform JSON structure
+func (tc *TerraformConverter) addCustomSourceDefinitionToJSON(resources map[string]interface{}, def airbyte.CustomSourceDefinition, workspaceID string, imports *[]interface{}) {
+	resourceType := "airbyte_source_definition"
+	resourceName := tc.sanitizeName(fmt.Sprintf("%s_%s", def.Name, def.SourceDefinitionID))
+
+	if _, ok := resources[resourceType]; !ok {
+		resources[resourceType] = make(map[string]interface{})
+	}
+
+	if tc.sourceDefinitionSeen[def.SourceDefinitionID] {
+		return
+	}
+	tc.sourceDefinitionSeen[def.SourceDefinitionID] = true
+
+	typeMap := resources[resourceType].(map[string]interface{})
+
+	resource := map[string]interface{}{
+		"name":              def.Name,
+		"workspace_id":      workspaceID,
+		"docker_repository": def.DockerRepository,
+		"docker_image_tag":  def.DockerImageTag,
+	}
+	if def.DocumentationURL != "" {
+		resource["documentation_url"] = def.DocumentationURL
+	}
+
+	typeMap[resourceName] = resource
+
+	if !tc.migrate {
+		importID, _ := json.Marshal(map[string]string{
+			"id":           def.SourceDefinitionID,
+			"workspace_id": workspaceID,
+		})
+		importBlock := map[string]interface{}{
+			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
+			"id": string(importID),
+		}
+		*imports = append(*imports, importBlock)
+
+		importKey := fmt.Sprintf("%s.%s", resourceType, resourceName)
+		tc.importComments[importKey] = fmt.Sprintf("Custom Source Definition: %s", def.Name)
+	}
+}
+
+// addCustomDestinationDefinitionToJSON adds a custom destination definition to the Terraform JSON structure
+func (tc *TerraformConverter) addCustomDestinationDefinitionToJSON(resources map[string]interface{}, def airbyte.CustomDestinationDefinition, workspaceID string, imports *[]interface{}) {
+	resourceType := "airbyte_destination_definition"
+	resourceName := tc.sanitizeName(fmt.Sprintf("%s_%s", def.Name, def.DestinationDefinitionID))
+
+	if _, ok := resources[resourceType]; !ok {
+		resources[resourceType] = make(map[string]interface{})
+	}
+
+	typeMap := resources[resourceType].(map[string]interface{})
+
+	resource := map[string]interface{}{
+		"name":              def.Name,
+		"workspace_id":      workspaceID,
+		"docker_repository": def.DockerRepository,
+		"docker_image_tag":  def.DockerImageTag,
+	}
+	if def.DocumentationURL != "" {
+		resource["documentation_url"] = def.DocumentationURL
+	}
+
+	typeMap[resourceName] = resource
+
+	if !tc.migrate {
+		importID, _ := json.Marshal(map[string]string{
+			"id":           def.DestinationDefinitionID,
+			"workspace_id": workspaceID,
+		})
+		importBlock := map[string]interface{}{
+			"to": fmt.Sprintf("%s.%s", resourceType, resourceName),
+			"id": string(importID),
+		}
+		*imports = append(*imports, importBlock)
+
+		importKey := fmt.Sprintf("%s.%s", resourceType, resourceName)
+		tc.importComments[importKey] = fmt.Sprintf("Custom Destination Definition: %s", def.Name)
 	}
 }
