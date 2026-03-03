@@ -150,4 +150,4 @@ goreleaser build --snapshot --clean
 
 ## License
 
-MIT
+[ELv2](./LICENSE.md)
