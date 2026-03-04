@@ -200,10 +200,50 @@ Create a mapping file that links old connection IDs to new ones:
 ```bash
 abtfexport state map \
   --states connection_states.json \
+  --workspace ws_new_456 \
   --output connection_mapping.json
 ```
 
-The mapping file contains old-to-new connection ID pairs for future state application.
+The mapping file contains old-to-new connection ID pairs used in the next steps.
+
+**7. Apply Saved States to New Connections**
+
+Transfer the sync state (cursor positions, stream states) from old connections to the new ones:
+
+```bash
+# Preview what would be applied (recommended first step)
+abtfexport state apply \
+  --mapping connection_mapping.json \
+  --states connection_states.json \
+  --dry-run
+
+# Apply the states
+abtfexport state apply \
+  --mapping connection_mapping.json \
+  --states connection_states.json
+```
+
+**8. Restore Original Names, Schedules, and Status**
+
+Restore the original connection names, schedules, and active status:
+
+```bash
+# Preview what would be restored (recommended first step)
+abtfexport state restore \
+  --mapping connection_mapping.json \
+  --states connection_states.json \
+  --dry-run
+
+# Restore the connections
+abtfexport state restore \
+  --mapping connection_mapping.json \
+  --states connection_states.json
+```
+
+This will:
+- Rename connections from old UUIDs back to their original human-readable names
+- Restore original sync schedules (cron, basic, or manual)
+- Re-enable connections that were originally active
 
 ### State Export File Format
 
@@ -250,12 +290,18 @@ The `connection_mapping.json` file contains:
 }
 ```
 
-### Future Enhancements
+### Complete Command Reference
 
-State migration is currently limited to export and mapping generation. Future versions will support:
-- Applying saved states to new connections
-- Re-enabling connections after state import
-- Restoring original schedules and names
+The full state migration workflow is supported with four commands:
+
+| Command | Description |
+|---------|-------------|
+| `state export` | Export connection states from source instance |
+| `state map` | Generate old-to-new connection ID mapping |
+| `state apply` | Apply saved states to new connections |
+| `state restore` | Restore original names, schedules, and status |
+
+All commands support `--dry-run` (where applicable) to preview changes before applying them.
 
 ## Development
 
@@ -278,7 +324,8 @@ State migration is currently limited to export and mapping generation. Future ve
 │   │   └── cron.go      # Schedule conversion utilities
 │   └── state/
 │       ├── exporter.go  # State export logic
-│       └── mapper.go    # ID mapping generation
+│       ├── mapper.go    # ID mapping generation
+│       └── applier.go   # State application and connection restoration
 ├── main.go              # Entry point with version info
 ├── go.mod
 └── README.md

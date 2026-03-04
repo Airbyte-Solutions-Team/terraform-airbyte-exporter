@@ -641,6 +641,7 @@ func (tc *TerraformConverter) commentOutConnectionBlocks(hclContent string) stri
 		}
 
 		// Track block depth by counting braces
+		wasInConnectionBlock := inConnectionBlock
 		if inConnectionBlock {
 			for _, ch := range line {
 				if ch == '{' {
@@ -648,7 +649,7 @@ func (tc *TerraformConverter) commentOutConnectionBlocks(hclContent string) stri
 				} else if ch == '}' {
 					blockDepth--
 					if blockDepth == 0 {
-						// End of connection block
+						// End of connection block - mark for exit after commenting this line
 						inConnectionBlock = false
 						currentBlockKey = ""
 					}
@@ -657,16 +658,12 @@ func (tc *TerraformConverter) commentOutConnectionBlocks(hclContent string) stri
 		}
 
 		// Comment out the line if we're inside a connection block
-		if inConnectionBlock || (currentBlockKey != "" && strings.HasPrefix(trimmed, "resource \"airbyte_connection\"")) {
+		// wasInConnectionBlock ensures the closing brace line is also commented
+		if wasInConnectionBlock || (currentBlockKey != "" && strings.HasPrefix(trimmed, "resource \"airbyte_connection\"")) {
 			if strings.TrimSpace(line) == "" {
 				result = append(result, "#")
 			} else {
 				result = append(result, "# "+line)
-			}
-
-			// Check if this was the closing brace
-			if !inConnectionBlock && currentBlockKey != "" {
-				currentBlockKey = ""
 			}
 		} else {
 			result = append(result, line)
