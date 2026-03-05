@@ -311,7 +311,6 @@ func exportSingleConnection(client *api.Client, conv *converter.TerraformConvert
 		return fmt.Errorf("failed to fetch source %s: %w", conn.SourceID, err)
 	}
 
-	fmt.Printf("Source data: %v", string(sourceData))
 	// Fetch the destination
 	fmt.Fprintf(os.Stderr, "Fetching destination %s...\n", conn.DestinationID)
 	destData, err := client.GetDestinationByID(conn.DestinationID)
