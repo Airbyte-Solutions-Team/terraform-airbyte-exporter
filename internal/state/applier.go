@@ -73,6 +73,17 @@ func (a *Applier) ApplyStates(mappingPath string, statesPath string, dryRun bool
 		if dryRun {
 			fmt.Fprintf(os.Stderr, "[Dry Run] Would apply state from %s to %s (%s)\n",
 				m.OldConnectionID, m.NewConnectionID, m.OriginalName)
+			if len(connState.StreamGenerations) > 0 {
+				fmt.Fprintf(os.Stderr, "  Would also apply %d stream generation(s)\n", len(connState.StreamGenerations))
+				for _, g := range connState.StreamGenerations {
+					ns := ""
+					if g.StreamNamespace != "" {
+						ns = g.StreamNamespace + "."
+					}
+					fmt.Fprintf(os.Stderr, "    Stream %s%s: generationId=%d\n",
+						ns, g.StreamName, g.GenerationID)
+				}
+			}
 			applied++
 			continue
 		}
@@ -92,6 +103,19 @@ func (a *Applier) ApplyStates(mappingPath string, statesPath string, dryRun bool
 		}
 
 		fmt.Fprintf(os.Stderr, "  Successfully applied state to %s\n", m.NewConnectionID)
+
+		// Apply stream generation IDs if available
+		if len(connState.StreamGenerations) > 0 {
+			if err := a.applyStreamGenerations(m.NewConnectionID, connState.StreamGenerations); err != nil {
+				fmt.Fprintf(os.Stderr, "  Warning: Failed to apply stream generations to %s (%s): %v\n",
+					m.NewConnectionID, m.OriginalName, err)
+				fmt.Fprintf(os.Stderr, "  The state was applied but generation IDs may not match. This could cause issues with incremental syncs.\n")
+			} else {
+				fmt.Fprintf(os.Stderr, "  Successfully applied %d stream generation(s) to %s\n",
+					len(connState.StreamGenerations), m.NewConnectionID)
+			}
+		}
+
 		applied++
 	}
 
@@ -245,6 +269,87 @@ func (a *Applier) RestoreConnections(mappingPath string, statesPath string, dryR
 
 	if failed > 0 {
 		return fmt.Errorf("%d connection restorations failed", failed)
+	}
+
+	return nil
+}
+
+// applyStreamGenerations updates the generationId on the new connection's stream configs
+// to match the exported values from the old connection.
+// This is necessary because Airbyte uses generation IDs to correlate state with stream configs:
+// if they don't match, Airbyte may treat the stream as needing a full refresh.
+func (a *Applier) applyStreamGenerations(connectionID string, generations []airbyte.StreamGenerationInfo) error {
+	// 1. Fetch the current connection from the internal API to get the full syncCatalog
+	connData, err := a.client.GetConnectionInternal(connectionID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch connection from internal API: %w", err)
+	}
+
+	// 2. Parse the response into a generic map so we can modify the syncCatalog
+	var connMap map[string]interface{}
+	if err := json.Unmarshal(connData, &connMap); err != nil {
+		return fmt.Errorf("failed to parse connection data: %w", err)
+	}
+
+	// 3. Build a lookup from (stream name, namespace) -> generation info
+	genLookup := make(map[string]airbyte.StreamGenerationInfo)
+	for _, g := range generations {
+		key := g.StreamName + "|" + g.StreamNamespace
+		genLookup[key] = g
+	}
+
+	// 4. Update the syncCatalog streams with the generation IDs
+	syncCatalog, ok := connMap["syncCatalog"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("syncCatalog not found or has unexpected format in connection response")
+	}
+
+	streams, ok := syncCatalog["streams"].([]interface{})
+	if !ok {
+		return fmt.Errorf("syncCatalog.streams not found or has unexpected format")
+	}
+
+	updated := 0
+	for _, streamRaw := range streams {
+		streamObj, ok := streamRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Extract stream name and namespace from the stream descriptor
+		streamInfo, ok := streamObj["stream"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		name, _ := streamInfo["name"].(string)
+		namespace, _ := streamInfo["namespace"].(string)
+
+		key := name + "|" + namespace
+		genInfo, found := genLookup[key]
+		if !found {
+			continue
+		}
+
+		// Update the config with the generation ID
+		config, ok := streamObj["config"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		config["generationId"] = genInfo.GenerationID
+		updated++
+	}
+
+	if updated == 0 {
+		return nil // No streams matched, nothing to update
+	}
+
+	// 5. Write the updated connection back via the internal API
+	// The internal /api/v1/connections/update requires the full connection object
+	_, err = a.client.UpdateConnectionInternal(connectionID, connMap)
+	if err != nil {
+		return fmt.Errorf("failed to update connection with generation IDs: %w", err)
 	}
 
 	return nil

@@ -45,7 +45,7 @@ func (e *Exporter) ExportConnectionStates(workspaceID string, outputPath string)
 		Connections: make([]airbyte.ConnectionStateMapping, 0),
 	}
 
-	// 4. Fetch state for each connection
+	// 4. Fetch state and stream generations for each connection
 	for _, conn := range connectionsResp.Connections {
 		stateData, err := e.client.GetConnectionState(conn.ConnectionID)
 		if err != nil {
@@ -62,13 +62,17 @@ func (e *Exporter) ExportConnectionStates(workspaceID string, outputPath string)
 			continue
 		}
 
+		// Fetch stream generation IDs from the internal API
+		streamGenerations := e.fetchStreamGenerations(conn.ConnectionID, conn.Name)
+
 		export.Connections = append(export.Connections, airbyte.ConnectionStateMapping{
 			OldConnectionID:   conn.ConnectionID,
 			OldConnectionName: conn.Name,
-			NewConnectionID:   "", // Will be filled by mapping command
+			NewConnectionID:   "",            // Will be filled by mapping command
 			OldSchedule:       conn.Schedule, // Preserve original schedule
 			OldStatus:         conn.Status,   // Preserve original status
 			State:             stateResp,
+			StreamGenerations: streamGenerations,
 		})
 	}
 
@@ -100,10 +104,13 @@ func (e *Exporter) ExportSingleConnectionState(connectionID string, outputPath s
 		return fmt.Errorf("failed to parse state: %w", err)
 	}
 
-	// 3. Build export structure
+	// 3. Fetch stream generation IDs from the internal API
+	streamGenerations := e.fetchStreamGenerations(connectionID, conn.Name)
+
+	// 4. Build export structure
 	export := airbyte.ConnectionStateExport{
-		ExportedAt:  time.Now(),
-		SourceAPI:   e.baseURL,
+		ExportedAt: time.Now(),
+		SourceAPI:  e.baseURL,
 		Connections: []airbyte.ConnectionStateMapping{
 			{
 				OldConnectionID:   conn.ConnectionID,
@@ -112,12 +119,66 @@ func (e *Exporter) ExportSingleConnectionState(connectionID string, outputPath s
 				OldSchedule:       conn.Schedule, // Preserve original schedule
 				OldStatus:         conn.Status,   // Preserve original status
 				State:             stateResp,
+				StreamGenerations: streamGenerations,
 			},
 		},
 	}
 
-	// 4. Write to file
+	// 5. Write to file
 	return e.writeStateFile(export, outputPath)
+}
+
+// fetchStreamGenerations retrieves the generationId for each stream in a connection
+// using the internal Airbyte API.
+// The internal API endpoint POST /api/v1/connections/get returns the full syncCatalog
+// with AirbyteStreamConfiguration that includes the generation field.
+func (e *Exporter) fetchStreamGenerations(connectionID string, connectionName string) []airbyte.StreamGenerationInfo {
+	connData, err := e.client.GetConnectionInternal(connectionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to fetch internal connection data for %s (%s): %v\n",
+			connectionID, connectionName, err)
+		fmt.Fprintf(os.Stderr, "  Stream generation IDs will not be included in the export for this connection.\n")
+		return nil
+	}
+
+	// Parse the internal API response to extract stream generation info.
+	// The response has: syncCatalog.streams[].stream.name, syncCatalog.streams[].stream.namespace,
+	// syncCatalog.streams[].config.generationId
+	var connResp struct {
+		SyncCatalog struct {
+			Streams []struct {
+				Stream struct {
+					Name      string `json:"name"`
+					Namespace string `json:"namespace"`
+				} `json:"stream"`
+				Config struct {
+					GenerationID int64 `json:"generationId"`
+				} `json:"config"`
+			} `json:"streams"`
+		} `json:"syncCatalog"`
+	}
+
+	if err := json.Unmarshal(connData, &connResp); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to parse internal connection data for %s (%s): %v\n",
+			connectionID, connectionName, err)
+		return nil
+	}
+
+	var generations []airbyte.StreamGenerationInfo
+	for _, s := range connResp.SyncCatalog.Streams {
+		generations = append(generations, airbyte.StreamGenerationInfo{
+			StreamName:      s.Stream.Name,
+			StreamNamespace: s.Stream.Namespace,
+			GenerationID:    s.Config.GenerationID,
+		})
+	}
+
+	if len(generations) > 0 {
+		fmt.Fprintf(os.Stderr, "  Exported %d stream generation(s) for connection %s (%s)\n",
+			len(generations), connectionID, connectionName)
+	}
+
+	return generations
 }
 
 // writeStateFile writes the state export to a JSON file
