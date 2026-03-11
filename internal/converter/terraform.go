@@ -1313,11 +1313,16 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 	}
 
 	// Create the connection resource with proper variable references
+	// Create the connection resource with proper variable references
 	resource := map[string]interface{}{
 		"name":           connectionName,
 		"source_id":      tc.getSourceReference(conn.SourceID),
 		"destination_id": tc.getDestinationReference(conn.DestinationID),
-		"status":         connectionStatus,
+	}
+
+	// Only include status in state migration mode (where it must be "inactive")
+	if tc.stateMigrationMode {
+		resource["status"] = connectionStatus
 	}
 
 	// Add optional fields with sensible defaults
