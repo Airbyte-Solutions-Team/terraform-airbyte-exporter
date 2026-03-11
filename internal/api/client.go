@@ -345,6 +345,114 @@ func (c *Client) GetConnectionState(connectionID string) ([]byte, error) {
 	return body, nil
 }
 
+// GetConnectionInternal retrieves a connection using the internal /api/v1/connections/get endpoint.
+// This returns the full AirbyteCatalog (syncCatalog) which includes generationId, minimumGenerationId,
+// and syncId on each stream's config - fields not available from the public API.
+func (c *Client) GetConnectionInternal(connectionID string) ([]byte, error) {
+	// Get a valid access token first
+	if err := c.getAccessToken(); err != nil {
+		return nil, fmt.Errorf("failed to get access token: %w", err)
+	}
+
+	serverRoot, err := c.getServerURL()
+	if err != nil {
+		return nil, err
+	}
+
+	connURL, err := url.JoinPath(serverRoot, "/api/v1/connections/get")
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct connection endpoint URL: %w", err)
+	}
+
+	requestBody := map[string]interface{}{
+		"connectionId": connectionID,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", connURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("internal connection API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	return body, nil
+}
+
+// UpdateConnectionInternal updates a connection using the internal /api/v1/connections/update endpoint.
+// This supports updating the full syncCatalog with generationId, minimumGenerationId, and syncId.
+func (c *Client) UpdateConnectionInternal(connectionID string, update map[string]interface{}) ([]byte, error) {
+	// Get a valid access token first
+	if err := c.getAccessToken(); err != nil {
+		return nil, fmt.Errorf("failed to get access token: %w", err)
+	}
+
+	serverRoot, err := c.getServerURL()
+	if err != nil {
+		return nil, err
+	}
+
+	connURL, err := url.JoinPath(serverRoot, "/api/v1/connections/update")
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct connection update endpoint URL: %w", err)
+	}
+
+	// Set the connectionId in the update data
+	update["connectionId"] = connectionID
+
+	jsonData, err := json.Marshal(update)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal update data: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", connURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("internal connection update API request failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	return respBody, nil
+}
+
 // SetConnectionState sets the state for a specific connection
 // Uses the internal /api/v1/state/create_or_update endpoint on the Airbyte server URL
 func (c *Client) SetConnectionState(connectionID string, stateData map[string]interface{}) ([]byte, error) {
