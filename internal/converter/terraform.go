@@ -23,6 +23,8 @@ type TerraformConverter struct {
 	destIDToName         map[string]string // Map destination IDs to their resource names
 	sourceDefinitionSeen map[string]bool   // Track seen source definitions to avoid duplicates
 	workspaceID          string            // Store workspace ID for variable references
+	stateMigrationMode   bool              // Enable state migration features (use old ID as name, disable connections)
+	commentedConnections map[string]string // Track connection blocks to comment out (keyed by "type.name")
 }
 
 // NewTerraformConverter creates a new Terraform converter
@@ -34,6 +36,7 @@ func NewTerraformConverter() *TerraformConverter {
 		sourceIDToName:       make(map[string]string),
 		destIDToName:         make(map[string]string),
 		sourceDefinitionSeen: make(map[string]bool),
+		commentedConnections: make(map[string]string),
 	}
 }
 
@@ -45,6 +48,11 @@ func (tc *TerraformConverter) SetMigrate(skip bool) {
 // SetWorkspaceID sets the workspace ID for variable references
 func (tc *TerraformConverter) SetWorkspaceID(workspaceID string) {
 	tc.workspaceID = workspaceID
+}
+
+// SetStateMigrationMode enables or disables state migration mode
+func (tc *TerraformConverter) SetStateMigrationMode(enabled bool) {
+	tc.stateMigrationMode = enabled
 }
 
 // getSourceReference returns the proper reference for a source ID
@@ -137,6 +145,7 @@ func (tc *TerraformConverter) ResetVariables() {
 	tc.importComments = make(map[string]string)
 	tc.sourceIDToName = make(map[string]string)
 	tc.destIDToName = make(map[string]string)
+	tc.commentedConnections = make(map[string]string)
 }
 
 // GetVariablesHCL returns the HCL for all tracked variables
@@ -548,6 +557,11 @@ func (tc *TerraformConverter) convertJSONToHCL(tfJSON map[string]interface{}) (s
 	hclOutput := string(hclFile.Bytes())
 	hclOutput = tc.addImportComments(hclOutput)
 
+	// Comment out connection blocks if in state migration mode
+	if tc.stateMigrationMode {
+		hclOutput = tc.commentOutConnectionBlocks(hclOutput)
+	}
+
 	return hclOutput, nil
 }
 
@@ -586,6 +600,102 @@ func (tc *TerraformConverter) addImportComments(hclContent string) string {
 		}
 
 		result = append(result, line)
+	}
+
+	return strings.Join(result, "\n")
+}
+
+// commentOutConnectionBlocks comments out connection resource blocks for migration workflow
+func (tc *TerraformConverter) commentOutConnectionBlocks(hclContent string) string {
+	if len(tc.commentedConnections) == 0 {
+		return hclContent
+	}
+
+	lines := strings.Split(hclContent, "\n")
+	var result []string
+	var inConnectionBlock bool
+	var blockDepth int
+	var currentBlockKey string
+	var hasAddedHeader bool
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+
+		// Check if this is the start of a connection resource block
+		if strings.HasPrefix(trimmed, "resource \"airbyte_connection\"") {
+			// Extract resource name from: resource "airbyte_connection" "resource_name" {
+			parts := strings.SplitN(trimmed, "\"", 5)
+			if len(parts) >= 4 {
+				resourceName := parts[3]
+				blockKey := fmt.Sprintf("airbyte_connection.%s", resourceName)
+
+				if originalName, ok := tc.commentedConnections[blockKey]; ok {
+					// Add header comment block before first connection (only once)
+					if !hasAddedHeader {
+						result = append(result, "")
+						result = append(result, "# ============================================================================")
+						result = append(result, "# MIGRATION: Connection Configuration Required")
+						result = append(result, "# ============================================================================")
+						result = append(result, "# The connections below have been commented out because they require the")
+						result = append(result, "# sources and destinations above to be fully configured before they can be")
+						result = append(result, "# created successfully.")
+						result = append(result, "#")
+						result = append(result, "# STEPS TO ENABLE CONNECTIONS:")
+						result = append(result, "# 1. Apply this Terraform configuration: terraform apply")
+						result = append(result, "#    (This creates sources and destinations only)")
+						result = append(result, "# 2. Configure the sources and destinations in the Airbyte UI")
+						result = append(result, "#    (Add credentials, test connections, etc.)")
+						result = append(result, "# 3. Uncomment the connection resources below")
+						result = append(result, "# 4. Apply again: terraform apply")
+						result = append(result, "#    (This creates the connections)")
+						result = append(result, "#")
+						result = append(result, "# NOTE: Connections are disabled (status = \"inactive\") and set to manual sync.")
+						result = append(result, "# You can re-enable them and restore schedules after state migration is complete.")
+						result = append(result, "# ============================================================================")
+						result = append(result, "")
+						hasAddedHeader = true
+					}
+
+					// Add per-connection comment with original name
+					result = append(result, fmt.Sprintf("# Original name: \"%s\"", originalName))
+
+					// Mark that we're now in a connection block that should be commented
+					inConnectionBlock = true
+					currentBlockKey = blockKey
+					blockDepth = 0
+				}
+			}
+		}
+
+		// Track block depth by counting braces
+		wasInConnectionBlock := inConnectionBlock
+		if inConnectionBlock {
+			for _, ch := range line {
+				if ch == '{' {
+					blockDepth++
+				} else if ch == '}' {
+					blockDepth--
+					if blockDepth == 0 {
+						// End of connection block - mark for exit after commenting this line
+						inConnectionBlock = false
+						currentBlockKey = ""
+					}
+				}
+			}
+		}
+
+		// Comment out the line if we're inside a connection block
+		// wasInConnectionBlock ensures the closing brace line is also commented
+		if wasInConnectionBlock || (currentBlockKey != "" && strings.HasPrefix(trimmed, "resource \"airbyte_connection\"")) {
+			if strings.TrimSpace(line) == "" {
+				result = append(result, "#")
+			} else {
+				result = append(result, "# "+line)
+			}
+		} else {
+			result = append(result, line)
+		}
 	}
 
 	return strings.Join(result, "\n")
@@ -1244,12 +1354,36 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 
 	typeMap := resources[resourceType].(map[string]interface{})
 
+	// Determine connection name and status based on migration mode
+	var connectionName string
+	var connectionStatus string
+	if tc.stateMigrationMode {
+		// State migration mode: Use old connection ID as name for matching
+		connectionName = conn.ConnectionID
+		// Set to inactive to prevent premature syncing
+		connectionStatus = "inactive"
+
+		// Log info about migration mode
+		fmt.Fprintf(os.Stderr, "  [Migration Mode] Connection '%s' (original name: '%s') will be disabled with manual sync\n",
+			conn.ConnectionID, conn.Name)
+		fmt.Fprintf(os.Stderr, "    Original schedule and name preserved in state export file\n")
+	} else {
+		// Normal mode: use original values
+		connectionName = conn.Name
+		connectionStatus = conn.Status
+	}
+
+	// Create the connection resource with proper variable references
 	// Create the connection resource with proper variable references
 	resource := map[string]interface{}{
-		"name":           conn.Name,
+		"name":           connectionName,
 		"source_id":      tc.getSourceReference(conn.SourceID),
 		"destination_id": tc.getDestinationReference(conn.DestinationID),
-		// Note: "status" field is intentionally omitted as it's read-only in Terraform
+	}
+
+	// Only include status in state migration mode (where it must be "inactive")
+	if tc.stateMigrationMode {
+		resource["status"] = connectionStatus
 	}
 
 	// Add optional fields with sensible defaults
@@ -1274,7 +1408,12 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 	}
 
 	// Add schedule if present
-	if conn.Schedule != nil {
+	// In state migration mode, always use manual schedule (original schedule preserved in state file)
+	if tc.stateMigrationMode {
+		resource["schedule"] = map[string]interface{}{
+			"schedule_type": "manual",
+		}
+	} else if conn.Schedule != nil {
 		scheduleType := strings.ToLower(conn.Schedule.ScheduleType)
 
 		// For "basic" schedule type, convert BasicTiming to cron expression
@@ -1391,6 +1530,12 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 	}
 
 	typeMap[resourceName] = resource
+
+	// Mark connection for commenting if in state migration mode
+	if tc.stateMigrationMode {
+		blockKey := fmt.Sprintf("%s.%s", resourceType, resourceName)
+		tc.commentedConnections[blockKey] = conn.Name // Store original name for reference
+	}
 
 	// Add import block (only if not skipping imports)
 	if !tc.migrate {
