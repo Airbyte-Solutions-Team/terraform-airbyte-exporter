@@ -195,6 +195,9 @@ terraform apply  # This creates the connections
 
 **6. Generate ID Mapping**
 
+> [!IMPORTANT]
+> Steps 6–8 connect to the **new** Airbyte instance. Update your `--api-url`, `--client-id`, and `--client-secret` flags (or `~/.abtfexport.yaml`) to point to the new instance before running these commands.
+
 Create a mapping file that links old connection IDs to new ones:
 
 ```bash
@@ -257,7 +260,6 @@ The `connection_states.json` file contains:
     {
       "oldConnectionId": "3b79f0ab-f988-4d86-83d4-21488c2cef60",
       "oldConnectionName": "postgres-to-snowflake",
-      "newConnectionId": "",
       "oldSchedule": {
         "scheduleType": "cron",
         "cronExpression": "0 */6 * * *"
@@ -312,7 +314,7 @@ All commands support `--dry-run` (where applicable) to preview changes before ap
 ├── cmd/
 │   ├── root.go        # Root command and CLI configuration
 │   ├── airbyte.go     # Export logic and Airbyte API integration
-│   └── state.go       # State migration commands (export, map)
+│   └── state.go       # State migration commands (export, map, apply, restore)
 ├── internal/
 │   ├── airbyte/
 │   │   ├── types.go   # Airbyte API response types

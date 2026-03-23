@@ -95,8 +95,12 @@ func (a *Applier) ApplyStates(mappingPath string, statesPath string, dryRun bool
 		applied++
 	}
 
-	fmt.Fprintf(os.Stderr, "\nState application complete: %d applied, %d skipped, %d failed\n",
-		applied, skipped, failed)
+	if dryRun {
+		fmt.Fprintf(os.Stderr, "\nDry run complete: %d would be applied, %d skipped\n", applied, skipped)
+	} else {
+		fmt.Fprintf(os.Stderr, "\nState application complete: %d applied, %d skipped, %d failed\n",
+			applied, skipped, failed)
+	}
 
 	if failed > 0 {
 		return fmt.Errorf("%d state applications failed", failed)
@@ -240,8 +244,12 @@ func (a *Applier) RestoreConnections(mappingPath string, statesPath string, dryR
 		restored++
 	}
 
-	fmt.Fprintf(os.Stderr, "\nConnection restoration complete: %d restored, %d skipped, %d failed\n",
-		restored, skipped, failed)
+	if dryRun {
+		fmt.Fprintf(os.Stderr, "\nDry run complete: %d would be restored, %d skipped\n", restored, skipped)
+	} else {
+		fmt.Fprintf(os.Stderr, "\nConnection restoration complete: %d restored, %d skipped, %d failed\n",
+			restored, skipped, failed)
+	}
 
 	if failed > 0 {
 		return fmt.Errorf("%d connection restorations failed", failed)
