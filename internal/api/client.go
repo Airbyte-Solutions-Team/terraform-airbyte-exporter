@@ -346,7 +346,7 @@ func (c *Client) GetConnectionState(connectionID string) ([]byte, error) {
 }
 
 // SetConnectionState sets the state for a specific connection
-// Uses the internal /api/v1/state/create_or_update endpoint on the Airbyte server URL
+// Uses the internal /api/v1/state/create_or_update_safe endpoint on the Airbyte server URL
 func (c *Client) SetConnectionState(connectionID string, stateData map[string]interface{}) ([]byte, error) {
 	// Get a valid access token first
 	if err := c.getAccessToken(); err != nil {
@@ -358,7 +358,7 @@ func (c *Client) SetConnectionState(connectionID string, stateData map[string]in
 		return nil, err
 	}
 
-	stateURL, err := url.JoinPath(serverRoot, "/api/v1/state/create_or_update")
+	stateURL, err := url.JoinPath(serverRoot, "/api/v1/state/create_or_update_safe")
 	if err != nil {
 		return nil, fmt.Errorf("failed to construct state endpoint URL: %w", err)
 	}
