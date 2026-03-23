@@ -363,8 +363,8 @@ func (c *Client) SetConnectionState(connectionID string, stateData map[string]in
 		return nil, fmt.Errorf("failed to construct state endpoint URL: %w", err)
 	}
 
-	// Set the connectionId in the state data
-	stateData["connectionId"] = connectionID
+	// connectionId is expected to already be set in stateData by the caller
+	// (redundant set removed to avoid mutating caller's map)
 
 	jsonData, err := json.Marshal(stateData)
 	if err != nil {
