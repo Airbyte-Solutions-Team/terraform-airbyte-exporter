@@ -248,6 +248,8 @@ This will:
 - Restore original sync schedules (cron, basic, or manual)
 - Re-enable connections that were originally active
 
+**Note**: After running `abtfexport state restore`, the Airbyte connections will differ from what Terraform expects via it's state, as many attributes have changed (such as name). If you plan to continue managing these connections with Terraform, update your .tf files accordingly. If Terraform was used only to migrate your connections, no further action is needed.
+
 ### State Export File Format
 
 The `connection_states.json` file contains:
