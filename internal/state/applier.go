@@ -109,25 +109,30 @@ func (a *Applier) ApplyStates(mappingPath string, statesPath string, dryRun bool
 	return nil
 }
 
-// buildStatePayload constructs the payload for the state create_or_update API
+// buildStatePayload constructs the payload for the state create_or_update API.
+// The API expects a ConnectionStateCreateOrUpdate object with connectionId at
+// the top level and state fields nested inside a connectionState object.
 func buildStatePayload(connectionID string, state airbyte.ConnectionStateResponse) map[string]interface{} {
-	payload := map[string]interface{}{
+	connectionState := map[string]interface{}{
 		"connectionId": connectionID,
 		"stateType":    state.StateType,
 	}
 
 	// Include the appropriate state data based on state type
 	if state.StreamState != nil {
-		payload["streamState"] = json.RawMessage(state.StreamState)
+		connectionState["streamState"] = json.RawMessage(state.StreamState)
 	}
 	if state.GlobalState != nil {
-		payload["globalState"] = json.RawMessage(state.GlobalState)
+		connectionState["globalState"] = json.RawMessage(state.GlobalState)
 	}
 	if state.State != nil {
-		payload["state"] = json.RawMessage(state.State)
+		connectionState["state"] = json.RawMessage(state.State)
 	}
 
-	return payload
+	return map[string]interface{}{
+		"connectionId":    connectionID,
+		"connectionState": connectionState,
+	}
 }
 
 // RestoreConnections restores original names, schedules, and status for migrated connections

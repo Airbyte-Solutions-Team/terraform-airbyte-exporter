@@ -12,7 +12,7 @@ func TestBuildStatePayload(t *testing.T) {
 		name         string
 		connectionID string
 		state        airbyte.ConnectionStateResponse
-		expectKeys   []string
+		expectKeys   []string // keys expected inside connectionState
 	}{
 		{
 			name:         "Stream state",
@@ -59,20 +59,35 @@ func TestBuildStatePayload(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			payload := buildStatePayload(tt.connectionID, tt.state)
 
-			// Check connectionId is set to the new connection ID
+			// Check top-level connectionId
 			if payload["connectionId"] != tt.connectionID {
-				t.Errorf("expected connectionId %s, got %s", tt.connectionID, payload["connectionId"])
+				t.Errorf("expected top-level connectionId %s, got %s", tt.connectionID, payload["connectionId"])
 			}
 
-			// Check stateType is preserved
-			if payload["stateType"] != tt.state.StateType {
-				t.Errorf("expected stateType %s, got %s", tt.state.StateType, payload["stateType"])
+			// Check connectionState is present and is a map
+			csRaw, ok := payload["connectionState"]
+			if !ok {
+				t.Fatalf("expected connectionState key to be present in payload")
+			}
+			cs, ok := csRaw.(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected connectionState to be a map, got %T", csRaw)
 			}
 
-			// Check expected keys are present
+			// Check nested connectionId
+			if cs["connectionId"] != tt.connectionID {
+				t.Errorf("expected nested connectionId %s, got %s", tt.connectionID, cs["connectionId"])
+			}
+
+			// Check stateType is preserved inside connectionState
+			if cs["stateType"] != tt.state.StateType {
+				t.Errorf("expected stateType %s, got %s", tt.state.StateType, cs["stateType"])
+			}
+
+			// Check expected keys are present inside connectionState
 			for _, key := range tt.expectKeys {
-				if _, ok := payload[key]; !ok {
-					t.Errorf("expected key %s to be present in payload", key)
+				if _, ok := cs[key]; !ok {
+					t.Errorf("expected key %s to be present in connectionState", key)
 				}
 			}
 
@@ -95,7 +110,17 @@ func TestBuildStatePayloadOverridesConnectionID(t *testing.T) {
 
 	payload := buildStatePayload("new-connection-id", state)
 
+	// Check top-level connectionId
 	if payload["connectionId"] != "new-connection-id" {
-		t.Errorf("expected connectionId to be 'new-connection-id', got '%s'", payload["connectionId"])
+		t.Errorf("expected top-level connectionId to be 'new-connection-id', got '%s'", payload["connectionId"])
+	}
+
+	// Check nested connectionId inside connectionState
+	cs, ok := payload["connectionState"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected connectionState to be a map")
+	}
+	if cs["connectionId"] != "new-connection-id" {
+		t.Errorf("expected nested connectionId to be 'new-connection-id', got '%s'", cs["connectionId"])
 	}
 }
