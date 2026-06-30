@@ -36,6 +36,9 @@ func runAirbyteExport(cmd *cobra.Command, args []string) error {
 	conv := converter.NewTerraformConverter()
 	conv.SetMigrate(migrate)
 	conv.SetStateMigrationMode(stateMigrationMode)
+	// During state migration, users configure sources/destinations (and connections via
+	// `state restore`) out-of-band, so ignore drift on those attributes unless opted out.
+	conv.SetIgnoreConfigDrift(stateMigrationMode && !viper.GetBool("airbyte.no-ignore-config-drift"))
 
 	// Check if connection-id is specified for targeted export
 	connectionID := viper.GetString("airbyte.connection-id")

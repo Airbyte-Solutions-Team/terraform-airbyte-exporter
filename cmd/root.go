@@ -53,6 +53,7 @@ func init() {
 	rootCmd.Flags().Bool("separate-variables", false, "Generate separate variables.tf file instead of including in airbyte.tf")
 	rootCmd.Flags().Bool("skip-providers", false, "Skip generating providers.tf file")
 	rootCmd.Flags().Bool("migrate-connection-state", false, "Prepare connections for state migration (disables connections, sets manual sync, uses old IDs as names, and comments out connection blocks)")
+	rootCmd.Flags().Bool("no-ignore-config-drift", false, "Opt out of the lifecycle { ignore_changes } blocks added during state migration. Use this if you want Terraform to manage source/destination/connection config as the source of truth instead of preserving changes made in the Airbyte UI")
 
 	// Bind flags to viper
 	viper.BindPFlag("api.url", rootCmd.PersistentFlags().Lookup("api-url"))
@@ -69,6 +70,7 @@ func init() {
 	viper.BindPFlag("airbyte.separate-variables", rootCmd.Flags().Lookup("separate-variables"))
 	viper.BindPFlag("airbyte.skip-providers", rootCmd.Flags().Lookup("skip-providers"))
 	viper.BindPFlag("airbyte.migrate-connection-state", rootCmd.Flags().Lookup("migrate-connection-state"))
+	viper.BindPFlag("airbyte.no-ignore-config-drift", rootCmd.Flags().Lookup("no-ignore-config-drift"))
 }
 
 // initConfig reads in config file and ENV variables if set.
