@@ -224,6 +224,129 @@ func TestCommentOutConnectionBlocksNestedBraces(t *testing.T) {
 	}
 }
 
+// helper: wrap a single resource map in the tfJSON structure convertJSONToHCL expects.
+func resourceTFJSON(resourceType, resourceName string, resource map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"resource": map[string]interface{}{
+			resourceType: map[string]interface{}{
+				resourceName: resource,
+			},
+		},
+	}
+}
+
+func TestWriteLifecycleBlock(t *testing.T) {
+	tc := NewTerraformConverter()
+
+	// A source resource carrying the lifecycle sentinel. No "configuration" attribute
+	// is set so the only occurrence of the word "configuration" is in ignore_changes.
+	resource := map[string]interface{}{
+		"name":         "My Source",
+		"workspace_id": "var.workspace_id",
+		"lifecycle": map[string]interface{}{
+			"ignore_changes": []interface{}{"configuration"},
+		},
+	}
+
+	out, err := tc.convertJSONToHCL(resourceTFJSON("airbyte_source_custom", "my_source", resource))
+	if err != nil {
+		t.Fatalf("convertJSONToHCL error: %v", err)
+	}
+
+	if !strings.Contains(out, "lifecycle {") {
+		t.Errorf("expected a lifecycle block, got:\n%s", out)
+	}
+	if !strings.Contains(out, "ignore_changes = [") {
+		t.Errorf("expected ignore_changes list, got:\n%s", out)
+	}
+	// The ignored attribute must be a BARE identifier, never a quoted string.
+	if strings.Contains(out, "\"configuration\"") {
+		t.Errorf("ignore_changes item must not be quoted, got:\n%s", out)
+	}
+	if !strings.Contains(out, "configuration,") {
+		t.Errorf("expected bare configuration identifier in ignore_changes, got:\n%s", out)
+	}
+}
+
+func TestAddConfigLifecycle(t *testing.T) {
+	t.Run("disabled by default", func(t *testing.T) {
+		tc := NewTerraformConverter()
+		resource := map[string]interface{}{"configuration": "{}"}
+		tc.addConfigLifecycle(resource)
+		if _, ok := resource["lifecycle"]; ok {
+			t.Error("lifecycle should not be added when ignoreConfigDrift is false")
+		}
+	})
+
+	t.Run("added when enabled and configuration present", func(t *testing.T) {
+		tc := NewTerraformConverter()
+		tc.SetIgnoreConfigDrift(true)
+		resource := map[string]interface{}{"configuration": "{}"}
+		tc.addConfigLifecycle(resource)
+		lc, ok := resource["lifecycle"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected lifecycle to be added")
+		}
+		items := lc["ignore_changes"].([]interface{})
+		if len(items) != 1 || items[0] != "configuration" {
+			t.Errorf("expected ignore_changes = [configuration], got %v", items)
+		}
+	})
+
+	t.Run("not added when no configuration present", func(t *testing.T) {
+		tc := NewTerraformConverter()
+		tc.SetIgnoreConfigDrift(true)
+		resource := map[string]interface{}{"name": "x"}
+		tc.addConfigLifecycle(resource)
+		if _, ok := resource["lifecycle"]; ok {
+			t.Error("lifecycle should not be added without a configuration attribute")
+		}
+	})
+}
+
+func TestCommentOutConnectionBlocksWithLifecycle(t *testing.T) {
+	// A connection block containing a nested lifecycle block must still be fully
+	// commented out — the brace-depth tracking has to survive the extra braces.
+	hclContent := `resource "airbyte_connection" "my_conn" {
+  name   = "test"
+  status = "inactive"
+  schedule {
+    schedule_type = "manual"
+  }
+  lifecycle {
+    ignore_changes = [
+      configurations,
+      name,
+      schedule,
+      status,
+    ]
+  }
+}
+`
+
+	tc := NewTerraformConverter()
+	tc.commentedConnections = map[string]string{
+		"airbyte_connection.my_conn": "Test Connection",
+	}
+
+	result := tc.commentOutConnectionBlocks(hclContent)
+
+	// The lifecycle line and the connection's closing brace must both be commented.
+	if !strings.Contains(result, "#   lifecycle {") {
+		t.Errorf("expected nested lifecycle block to be commented, got:\n%s", result)
+	}
+	if !strings.Contains(result, "# }") {
+		t.Errorf("expected closing brace of connection block to be commented, got:\n%s", result)
+	}
+	// Nothing from the block should leak out uncommented.
+	for _, line := range strings.Split(result, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "ignore_changes = [" || trimmed == "configurations," {
+			t.Errorf("found uncommented connection content: %q", line)
+		}
+	}
+}
+
 func TestSanitizeName(t *testing.T) {
 	tc := NewTerraformConverter()
 

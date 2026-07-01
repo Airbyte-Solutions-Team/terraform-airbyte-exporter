@@ -25,6 +25,7 @@ type TerraformConverter struct {
 	workspaceID          string            // Store workspace ID for variable references
 	stateMigrationMode   bool              // Enable state migration features (use old ID as name, disable connections)
 	commentedConnections map[string]string // Track connection blocks to comment out (keyed by "type.name")
+	ignoreConfigDrift    bool              // Emit lifecycle { ignore_changes } so terraform apply won't overwrite UI changes
 }
 
 // NewTerraformConverter creates a new Terraform converter
@@ -53,6 +54,14 @@ func (tc *TerraformConverter) SetWorkspaceID(workspaceID string) {
 // SetStateMigrationMode enables or disables state migration mode
 func (tc *TerraformConverter) SetStateMigrationMode(enabled bool) {
 	tc.stateMigrationMode = enabled
+}
+
+// SetIgnoreConfigDrift enables or disables emitting lifecycle { ignore_changes }
+// blocks on sources, destinations, and connections. When enabled, terraform apply
+// will not overwrite attributes that the user configures out-of-band (e.g. in the
+// Airbyte UI or via the state restore command).
+func (tc *TerraformConverter) SetIgnoreConfigDrift(enabled bool) {
+	tc.ignoreConfigDrift = enabled
 }
 
 // getSourceReference returns the proper reference for a source ID
@@ -701,6 +710,21 @@ func (tc *TerraformConverter) commentOutConnectionBlocks(hclContent string) stri
 	return strings.Join(result, "\n")
 }
 
+// addConfigLifecycle adds a lifecycle { ignore_changes = [configuration] } sentinel
+// to a source/destination resource map when drift-ignoring is enabled and a
+// configuration is present.
+func (tc *TerraformConverter) addConfigLifecycle(resource map[string]interface{}) {
+	if !tc.ignoreConfigDrift {
+		return
+	}
+	if _, ok := resource["configuration"]; !ok {
+		return
+	}
+	resource["lifecycle"] = map[string]interface{}{
+		"ignore_changes": []interface{}{"configuration"},
+	}
+}
+
 // writeAttributesToBlock writes attributes from a map to an HCL block
 func (tc *TerraformConverter) writeAttributesToBlock(body *hclwrite.Body, attrs map[string]interface{}) {
 	keys := make([]string, 0, len(attrs))
@@ -710,6 +734,10 @@ func (tc *TerraformConverter) writeAttributesToBlock(body *hclwrite.Body, attrs 
 	sort.Strings(keys)
 
 	for _, key := range keys {
+		// lifecycle is a nested block, not an attribute; emit it last for stable output.
+		if key == "lifecycle" {
+			continue
+		}
 		value := attrs[key]
 		if key == "to" {
 			if strVal, ok := value.(string); ok {
@@ -721,6 +749,33 @@ func (tc *TerraformConverter) writeAttributesToBlock(body *hclwrite.Body, attrs 
 			tc.writeAttribute(body, key, value)
 		}
 	}
+
+	if lc, ok := attrs["lifecycle"]; ok {
+		tc.writeLifecycleBlock(body, lc)
+	}
+}
+
+// writeLifecycleBlock emits a lifecycle { ignore_changes = [...] } block. The
+// ignore_changes items must be bare identifiers (e.g. configuration), NOT quoted
+// strings, so raw tokens are used instead of SetAttributeValue/cty.StringVal.
+func (tc *TerraformConverter) writeLifecycleBlock(body *hclwrite.Body, value interface{}) {
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return
+	}
+	items, _ := m["ignore_changes"].([]interface{})
+	if len(items) == 0 {
+		return
+	}
+	lc := body.AppendNewBlock("lifecycle", nil)
+	tokens := hclwrite.Tokens{tc.tokenSymbol("[")}
+	for _, it := range items {
+		if s, ok := it.(string); ok {
+			tokens = append(tokens, tc.tokenSymbol("\n"), tc.tokenIdent("  "+s), tc.tokenSymbol(","))
+		}
+	}
+	tokens = append(tokens, tc.tokenSymbol("\n"), tc.tokenSymbol("]"))
+	lc.Body().SetAttributeRaw("ignore_changes", tokens)
 }
 
 // writeAttribute writes a single attribute to an HCL block
@@ -1227,6 +1282,8 @@ func (tc *TerraformConverter) addSourceToJSON(resources map[string]interface{}, 
 	}
 	// Note: Empty configuration is handled by validateResource()
 
+	tc.addConfigLifecycle(resource)
+
 	typeMap[resourceName] = resource
 
 	// Track this source ID to resource name mapping
@@ -1284,6 +1341,8 @@ func (tc *TerraformConverter) addDestinationToJSON(resources map[string]interfac
 		resource["configuration"] = processedConfig
 	}
 	// Note: Empty configuration is handled by validateResource()
+
+	tc.addConfigLifecycle(resource)
 
 	typeMap[resourceName] = resource
 
@@ -1527,6 +1586,20 @@ func (tc *TerraformConverter) addConnectionToJSON(resources map[string]interface
 	}
 	resource["configurations"] = map[string]interface{}{
 		"streams": streamsAsInterface,
+	}
+
+	// Ignore drift on attributes that are changed out-of-band during migration
+	// (in the UI, or by the `state restore` command which rewrites name/schedule/status).
+	if tc.ignoreConfigDrift {
+		var ignore []interface{}
+		for _, k := range []string{"configurations", "name", "schedule", "status"} {
+			if _, ok := resource[k]; ok {
+				ignore = append(ignore, k)
+			}
+		}
+		if len(ignore) > 0 {
+			resource["lifecycle"] = map[string]interface{}{"ignore_changes": ignore}
+		}
 	}
 
 	typeMap[resourceName] = resource
